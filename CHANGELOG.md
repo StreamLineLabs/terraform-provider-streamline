@@ -1,6 +1,7 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+- docs: update resource schema documentation (2026-02-22)
 - refactor: extract connection pool into dedicated package (2026-02-21)
 - docs: add Go module installation instructions (2026-02-20)
 
