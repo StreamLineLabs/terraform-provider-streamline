@@ -1,14 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-- docs: update resource schema documentation (2026-02-22)
-- refactor: extract connection pool into dedicated package (2026-02-21)
-- docs: add Go module installation instructions (2026-02-20)
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+- Extract connection pool into dedicated package
 
 ## [0.2.0] - 2026-02-18
 
