@@ -6,8 +6,11 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"math"
 	"net"
+	"os"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -24,12 +27,14 @@ type StreamlineClient struct {
 	tlsConfig    *tls.Config
 	sasl         sasl.Mechanism
 	timeout      time.Duration
+	maxRetries   int
 }
 
 // Config holds configuration for creating a StreamlineClient via NewStreamlineClient.
 type Config struct {
 	Brokers       []string
 	Timeout       time.Duration
+	MaxRetries    int
 	TLSEnabled    bool
 	TLSCACertPath string
 	TLSCertPath   string
@@ -46,12 +51,17 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 	}
 
 	client := &StreamlineClient{
-		brokers: cfg.Brokers,
-		timeout: cfg.Timeout,
+		brokers:    cfg.Brokers,
+		timeout:    cfg.Timeout,
+		maxRetries: cfg.MaxRetries,
 	}
 
 	if client.timeout == 0 {
 		client.timeout = 30 * time.Second
+	}
+
+	if client.maxRetries <= 0 {
+		client.maxRetries = 3
 	}
 
 	// Configure SASL if provided
@@ -158,11 +168,33 @@ func createTLSConfig(caCert, clientCert, clientKey string) (*tls.Config, error) 
 		MinVersion: tls.VersionTLS12,
 	}
 
-	// For now, use system CA pool
-	// In production, you'd load custom CA certs here
-	if caCert != "" || clientCert != "" || clientKey != "" {
-		// TODO: Load custom certificates
-		tlsCfg.InsecureSkipVerify = false
+	// Load custom CA certificate if provided
+	if caCert != "" {
+		caCertData, err := os.ReadFile(caCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate %s: %w", caCert, err)
+		}
+		caCertPool := tls.Config{}.RootCAs
+		if caCertPool == nil {
+			var certPoolErr error
+			caCertPool, certPoolErr = x509.SystemCertPool()
+			if certPoolErr != nil {
+				caCertPool = x509.NewCertPool()
+			}
+		}
+		if !caCertPool.AppendCertsFromPEM(caCertData) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", caCert)
+		}
+		tlsCfg.RootCAs = caCertPool
+	}
+
+	// Load client certificate and key for mTLS if provided
+	if clientCert != "" && clientKey != "" {
+		cert, err := tls.LoadX509KeyPair(clientCert, clientKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
 
 	return tlsCfg, nil
@@ -191,37 +223,34 @@ type TopicMetadata struct {
 
 // CreateTopic creates a new topic
 func (c *StreamlineClient) CreateTopic(ctx context.Context, cfg TopicConfig) error {
-	conn, err := c.getControllerConn(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to connect to controller: %w", err)
-	}
-	defer conn.Close()
-
-	topicConfigs := make([]kafka.TopicConfig, 1)
-	topicConfigs[0] = kafka.TopicConfig{
-		Topic:             cfg.Name,
-		NumPartitions:     cfg.Partitions,
-		ReplicationFactor: cfg.ReplicationFactor,
-	}
-
-	// Add config entries
-	if len(cfg.Config) > 0 {
-		configs := make([]kafka.ConfigEntry, 0, len(cfg.Config))
-		for k, v := range cfg.Config {
-			configs = append(configs, kafka.ConfigEntry{
-				ConfigName:  k,
-				ConfigValue: v,
-			})
+	return c.withRetry(ctx, "create topic", func(ctx context.Context) error {
+		conn, err := c.getControllerConn(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to connect to controller: %w", err)
 		}
-		topicConfigs[0].ConfigEntries = configs
-	}
+		defer conn.Close()
 
-	err = conn.CreateTopics(topicConfigs...)
-	if err != nil {
-		return fmt.Errorf("failed to create topic: %w", err)
-	}
+		topicConfigs := make([]kafka.TopicConfig, 1)
+		topicConfigs[0] = kafka.TopicConfig{
+			Topic:             cfg.Name,
+			NumPartitions:     cfg.Partitions,
+			ReplicationFactor: cfg.ReplicationFactor,
+		}
 
-	return nil
+		// Add config entries
+		if len(cfg.Config) > 0 {
+			configs := make([]kafka.ConfigEntry, 0, len(cfg.Config))
+			for k, v := range cfg.Config {
+				configs = append(configs, kafka.ConfigEntry{
+					ConfigName:  k,
+					ConfigValue: v,
+				})
+			}
+			topicConfigs[0].ConfigEntries = configs
+		}
+
+		return conn.CreateTopics(topicConfigs...)
+	})
 }
 
 // GetTopic retrieves topic metadata
@@ -285,18 +314,15 @@ func (c *StreamlineClient) UpdateTopic(ctx context.Context, cfg TopicConfig) err
 
 // DeleteTopic deletes a topic
 func (c *StreamlineClient) DeleteTopic(ctx context.Context, name string) error {
-	conn, err := c.getControllerConn(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to connect to controller: %w", err)
-	}
-	defer conn.Close()
+	return c.withRetry(ctx, "delete topic", func(ctx context.Context) error {
+		conn, err := c.getControllerConn(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to connect to controller: %w", err)
+		}
+		defer conn.Close()
 
-	err = conn.DeleteTopics(name)
-	if err != nil {
-		return fmt.Errorf("failed to delete topic: %w", err)
-	}
-
-	return nil
+		return conn.DeleteTopics(name)
+	})
 }
 
 // ListTopics lists all topics
@@ -351,24 +377,22 @@ type ACLConfig struct {
 
 // CreateACL creates a new ACL
 func (c *StreamlineClient) CreateACL(ctx context.Context, cfg ACLConfig) error {
-	_, err := c.kafkaClient.CreateACLs(ctx, &kafka.CreateACLsRequest{
-		ACLs: []kafka.ACLEntry{
-			{
-				ResourceType:        resourceTypeFromString(cfg.ResourceType),
-				ResourceName:        cfg.ResourceName,
-				ResourcePatternType: patternTypeFromString(cfg.PatternType),
-				Principal:           cfg.Principal,
-				Host:                cfg.Host,
-				Operation:           operationFromString(cfg.Operation),
-				PermissionType:      permissionTypeFromString(cfg.PermissionType),
+	return c.withRetry(ctx, "create ACL", func(ctx context.Context) error {
+		_, err := c.kafkaClient.CreateACLs(ctx, &kafka.CreateACLsRequest{
+			ACLs: []kafka.ACLEntry{
+				{
+					ResourceType:        resourceTypeFromString(cfg.ResourceType),
+					ResourceName:        cfg.ResourceName,
+					ResourcePatternType: patternTypeFromString(cfg.PatternType),
+					Principal:           cfg.Principal,
+					Host:                cfg.Host,
+					Operation:           operationFromString(cfg.Operation),
+					PermissionType:      permissionTypeFromString(cfg.PermissionType),
+				},
 			},
-		},
+		})
+		return err
 	})
-	if err != nil {
-		return fmt.Errorf("failed to create ACL: %w", err)
-	}
-
-	return nil
 }
 
 // GetACL retrieves a single ACL entry matching the filter
@@ -416,24 +440,22 @@ func (c *StreamlineClient) GetACL(ctx context.Context, cfg ACLConfig) (*ACLConfi
 
 // DeleteACL deletes ACL entries matching the filter
 func (c *StreamlineClient) DeleteACL(ctx context.Context, cfg ACLConfig) error {
-	_, err := c.kafkaClient.DeleteACLs(ctx, &kafka.DeleteACLsRequest{
-		Filters: []kafka.DeleteACLsFilter{
-			{
-				ResourceTypeFilter:        resourceTypeFromString(cfg.ResourceType),
-				ResourceNameFilter:        cfg.ResourceName,
-				ResourcePatternTypeFilter: patternTypeFromString(cfg.PatternType),
-				PrincipalFilter:           cfg.Principal,
-				HostFilter:                cfg.Host,
-				Operation:                 operationFromString(cfg.Operation),
-				PermissionType:            permissionTypeFromString(cfg.PermissionType),
+	return c.withRetry(ctx, "delete ACL", func(ctx context.Context) error {
+		_, err := c.kafkaClient.DeleteACLs(ctx, &kafka.DeleteACLsRequest{
+			Filters: []kafka.DeleteACLsFilter{
+				{
+					ResourceTypeFilter:        resourceTypeFromString(cfg.ResourceType),
+					ResourceNameFilter:        cfg.ResourceName,
+					ResourcePatternTypeFilter: patternTypeFromString(cfg.PatternType),
+					PrincipalFilter:           cfg.Principal,
+					HostFilter:                cfg.Host,
+					Operation:                 operationFromString(cfg.Operation),
+					PermissionType:            permissionTypeFromString(cfg.PermissionType),
+				},
 			},
-		},
+		})
+		return err
 	})
-	if err != nil {
-		return fmt.Errorf("failed to delete ACL: %w", err)
-	}
-
-	return nil
 }
 
 // =============================================================================
@@ -495,6 +517,28 @@ func (c *StreamlineClient) GetClusterMetadata(ctx context.Context) (*ClusterMeta
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+// withRetry executes fn with exponential backoff retry on transient errors.
+// Base delay is 1s, doubling each attempt, capped at 10s.
+func (c *StreamlineClient) withRetry(ctx context.Context, operation string, fn func(ctx context.Context) error) error {
+	var lastErr error
+	for attempt := 0; attempt < c.maxRetries; attempt++ {
+		lastErr = fn(ctx)
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt < c.maxRetries-1 {
+			delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(attempt)), float64(10*time.Second)))
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("%s: %w (after %d attempts, context cancelled)", operation, lastErr, attempt+1)
+			case <-time.After(delay):
+			}
+		}
+	}
+	return fmt.Errorf("%s: %w (after %d attempts)", operation, lastErr, c.maxRetries)
+}
 
 func (c *StreamlineClient) getControllerConn(ctx context.Context) (*kafka.Conn, error) {
 	// Connect to any broker first
