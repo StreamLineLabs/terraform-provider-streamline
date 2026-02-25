@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- **Testing**: add plan-only tests for resource changes
 - **Fixed**: correct import state for existing topics
 - **Documentation**: regenerate provider documentation from schema
 - **Added**: implement data source for cluster info
