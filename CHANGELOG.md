@@ -30,3 +30,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `streamline_topics` data source for listing topics
 - Acceptance tests for all resources and data sources
 - Terraform Plugin Framework v1.5 based provider
+
