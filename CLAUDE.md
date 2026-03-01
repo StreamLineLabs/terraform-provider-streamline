@@ -55,3 +55,4 @@ provider "streamline" {
 - `streamline_acl` — Resource type, principal, operation, permission
 - `streamline_user` — Username, SASL mechanism, credentials
 - `streamline_schema` — Subject, schema type (Avro/JSON/Protobuf), compatibility
+
