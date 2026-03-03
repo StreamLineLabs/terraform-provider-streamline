@@ -479,3 +479,4 @@ func (r *TopicResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 func (r *TopicResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
+
