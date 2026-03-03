@@ -345,3 +345,4 @@ func (r *AclResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		"id": state.ID.ValueString(),
 	})
 }
+
