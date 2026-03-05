@@ -1,0 +1,5 @@
+# Example variable values for Kubernetes setup.
+# Copy to terraform.tfvars and customize for your environment.
+
+streamline_endpoint = "streamline.streamline-system.svc.cluster.local:9092"
+namespace           = "default"

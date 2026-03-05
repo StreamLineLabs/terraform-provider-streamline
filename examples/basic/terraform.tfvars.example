@@ -1,0 +1,4 @@
+# Example variable values for basic setup.
+# Copy to terraform.tfvars and customize for your environment.
+
+# bootstrap_servers = "localhost:9092"
