@@ -1,0 +1,8 @@
+# Example variable values for production setup.
+# Copy to terraform.tfvars and customize for your environment.
+#
+# IMPORTANT: Never commit terraform.tfvars with real credentials to version control.
+
+bootstrap_servers = "streamline.example.com:9092"
+sasl_username     = "admin"
+sasl_password     = "CHANGE_ME"
