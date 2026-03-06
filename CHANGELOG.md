@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor: extract common CRUD helpers (2026-03-06)
 
 - fix: resolve state drift detection for ACL resources (2026-03-06)
+
+- feat: add topic retention policy resource (2026-03-06)
 ## [Unreleased]
 
 ## [0.2.0] - 2026-02-28
