@@ -1,4 +1,4 @@
-module github.com/streamline-platform/terraform-provider-streamline
+module github.com/streamlinelabs/terraform-provider-streamline
 
 go 1.24.0
 

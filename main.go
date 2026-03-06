@@ -14,7 +14,7 @@
 //	terraform {
 //	  required_providers {
 //	    streamline = {
-//	      source = "streamline-platform/streamline"
+//	      source = "streamlinelabs/streamline"
 //	    }
 //	  }
 //	}
@@ -33,7 +33,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/streamline-platform/terraform-provider-streamline/internal/provider"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/provider"
 )
 
 var (
@@ -48,7 +48,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/streamline-platform/streamline",
+		Address: "registry.terraform.io/streamlinelabs/streamline",
 		Debug:   debug,
 	}
 

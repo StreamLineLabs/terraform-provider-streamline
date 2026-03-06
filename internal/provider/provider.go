@@ -20,9 +20,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/streamline-platform/terraform-provider-streamline/internal/client"
-	"github.com/streamline-platform/terraform-provider-streamline/internal/datasources"
-	"github.com/streamline-platform/terraform-provider-streamline/internal/resources"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/client"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/datasources"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/resources"
 )
 
 // Ensure StreamlineProvider satisfies various provider interfaces.
@@ -74,7 +74,7 @@ func (p *StreamlineProvider) Schema(ctx context.Context, req provider.SchemaRequ
 	resp.Schema = schema.Schema{
 		Description: "The Streamline provider enables Terraform to manage Streamline streaming platform resources.",
 		MarkdownDescription: `
-The Streamline provider enables Terraform to manage [Streamline](https://github.com/streamline-platform/streamline) streaming platform resources.
+The Streamline provider enables Terraform to manage [Streamline](https://github.com/streamlinelabs/streamline) streaming platform resources.
 
 Streamline is a Kafka-compatible streaming platform with support for:
 - Topics and partitions
@@ -88,7 +88,7 @@ Streamline is a Kafka-compatible streaming platform with support for:
 terraform {
   required_providers {
     streamline = {
-      source = "streamline-platform/streamline"
+      source = "streamlinelabs/streamline"
     }
   }
 }

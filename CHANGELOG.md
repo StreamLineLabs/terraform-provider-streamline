@@ -6,14 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-- refactor: extract common CRUD helpers (2026-03-06)
-
-- fix: resolve state drift detection for ACL resources (2026-03-06)
-
-- feat: add topic retention policy resource (2026-03-06)
 ## [Unreleased]
 
-## [0.2.0] - 2026-02-28
+- refactor: extract common CRUD helpers (2026-03-06)
+- fix: resolve state drift detection for ACL resources (2026-03-06)
+- feat: add topic retention policy resource (2026-03-06)
 - **Testing**: add plan-only tests for resource changes
 - **Fixed**: correct import state for existing topics
 - **Documentation**: regenerate provider documentation from schema
@@ -27,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Extract connection pool into dedicated package
+
 
 ## [0.2.0] - 2026-02-18
 

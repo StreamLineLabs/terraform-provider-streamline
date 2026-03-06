@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 
-	"github.com/streamline-platform/terraform-provider-streamline/internal/provider"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/provider"
 )
 
 // testAccProtoV6ProviderFactories are used to instantiate a provider during

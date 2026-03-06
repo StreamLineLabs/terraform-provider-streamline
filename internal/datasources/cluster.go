@@ -13,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/streamline-platform/terraform-provider-streamline/internal/client"
+	"github.com/streamlinelabs/terraform-provider-streamline/internal/client"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
