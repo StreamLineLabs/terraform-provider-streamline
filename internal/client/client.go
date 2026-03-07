@@ -758,3 +758,22 @@ func (c *StreamlineClient) Close() error {
 	// kafka-go connections are closed individually
 	return nil
 }
+
+
+// GracefulClose drains any pending operations and closes the client connection.
+func (c *StreamlineClient) GracefulClose(ctx context.Context) error {
+	// Signal shutdown intent
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+
+	// Wait for in-flight requests to complete (with timeout from context)
+	select {
+	case <-c.inflight.Done():
+		// All requests completed
+	case <-ctx.Done():
+		return fmt.Errorf("graceful shutdown timed out: %w", ctx.Err())
+	}
+
+	return c.httpClient.CloseIdleConnections()
+}
