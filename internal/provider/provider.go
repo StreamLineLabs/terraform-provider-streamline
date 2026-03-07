@@ -55,6 +55,12 @@ type ProviderClients struct {
 }
 
 // New creates a new provider instance
+const (
+	defaultCreateTimeout = 30 * time.Second
+	defaultReadTimeout   = 10 * time.Second
+	defaultDeleteTimeout = 30 * time.Second
+)
+
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &StreamlineProvider{
