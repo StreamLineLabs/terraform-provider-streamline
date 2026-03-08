@@ -332,3 +332,10 @@ func (p *StreamlineProvider) DataSources(ctx context.Context) []func() datasourc
 		datasources.NewTopicsDataSource,
 	}
 }
+
+
+// TLS configuration notes for v0.3.0:
+// - tls_skip_verify: Skip TLS certificate verification (not recommended for production)
+// - tls_ca_cert: Path to CA certificate for server verification
+// - tls_client_cert: Path to client certificate for mutual TLS
+// - tls_client_key: Path to client private key for mutual TLS
