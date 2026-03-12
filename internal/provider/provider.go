@@ -322,6 +322,7 @@ func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Re
 		resources.NewAclResource,
 		resources.NewSchemaResource,
 		resources.NewUserResource,
+		resources.NewConsumerGroupResource,
 	}
 }
 

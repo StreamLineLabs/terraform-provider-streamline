@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `streamline_consumer_group` resource — manage consumer groups via Terraform (CRUD + import)
+- Client: `ListConsumerGroups()`, `DescribeConsumerGroup()`, `DeleteConsumerGroup()` methods
+- Consumer group resource supports `group_id`, computed `state` and `members` attributes
+
 - refactor: extract common CRUD helpers (2026-03-06)
 - fix: resolve state drift detection for ACL resources (2026-03-06)
 - feat: add topic retention policy resource (2026-03-06)
