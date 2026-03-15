@@ -43,6 +43,7 @@ type StreamlineProviderModel struct {
 	TLSCACert         types.String `tfsdk:"tls_ca_cert"`
 	TLSClientCert     types.String `tfsdk:"tls_client_cert"`
 	TLSClientKey      types.String `tfsdk:"tls_client_key"`
+	TLSSkipVerify     types.Bool   `tfsdk:"tls_skip_verify"`
 	ConnectionTimeout types.Int64  `tfsdk:"connection_timeout"`
 	RequestTimeout    types.Int64  `tfsdk:"request_timeout"`
 	SchemaRegistryURL types.String `tfsdk:"schema_registry_url"`
@@ -145,6 +146,10 @@ resource "streamline_topic" "events" {
 			},
 			"tls_client_key": schema.StringAttribute{
 				Description: "Path to client private key file for mTLS",
+				Optional:    true,
+			},
+			"tls_skip_verify": schema.BoolAttribute{
+				Description: "Skip TLS certificate verification (development only, NOT recommended for production)",
 				Optional:    true,
 			},
 			"connection_timeout": schema.Int64Attribute{
@@ -258,6 +263,7 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 		TLSCACertPath:  tlsCACert,
 		TLSCertPath:    tlsClientCert,
 		TLSKeyPath:     tlsClientKey,
+		TLSSkipVerify:  data.TLSSkipVerify.ValueBool(),
 	}
 
 	// Configure SASL if specified
@@ -335,8 +341,3 @@ func (p *StreamlineProvider) DataSources(ctx context.Context) []func() datasourc
 }
 
 
-// TLS configuration notes for v0.3.0:
-// - tls_skip_verify: Skip TLS certificate verification (not recommended for production)
-// - tls_ca_cert: Path to CA certificate for server verification
-// - tls_client_cert: Path to client certificate for mutual TLS
-// - tls_client_key: Path to client private key for mutual TLS
