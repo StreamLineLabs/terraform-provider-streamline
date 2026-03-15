@@ -45,6 +45,7 @@ type Config struct {
 	TLSCACertPath string
 	TLSCertPath   string
 	TLSKeyPath    string
+	TLSSkipVerify bool
 	SASLMechanism string
 	SASLUsername  string
 	SASLPassword  string
@@ -82,7 +83,7 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 
 	// Configure TLS if enabled
 	if cfg.TLSEnabled {
-		tlsCfg, err := createTLSConfig(cfg.TLSCACertPath, cfg.TLSCertPath, cfg.TLSKeyPath)
+		tlsCfg, err := createTLSConfig(cfg.TLSCACertPath, cfg.TLSCertPath, cfg.TLSKeyPath, cfg.TLSSkipVerify)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create TLS config: %w", err)
 		}
@@ -170,10 +171,11 @@ func createSASLMechanism(mechanism, username, password string) (sasl.Mechanism, 
 	}
 }
 
-func createTLSConfig(caCert, clientCert, clientKey string) (*tls.Config, error) {
+func createTLSConfig(caCert, clientCert, clientKey string, skipVerify bool) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
+	tlsCfg.InsecureSkipVerify = skipVerify
 
 	// Load custom CA certificate if provided
 	if caCert != "" {
