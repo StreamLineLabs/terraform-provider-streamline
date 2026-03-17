@@ -44,3 +44,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terraform Plugin Framework v1.5 based provider
 - fix: handle null values in resource plan comparison
 - docs: add examples for topic resource configuration
+- test: add resource import round-trip verification
