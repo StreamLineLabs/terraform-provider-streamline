@@ -790,7 +790,6 @@ func (c *StreamlineClient) ListConsumerGroups(ctx context.Context) ([]ConsumerGr
 		for _, g := range resp.Groups {
 			result = append(result, ConsumerGroupInfo{
 				GroupID: g.GroupID,
-				State:   g.ProtocolType,
 			})
 		}
 		return nil
@@ -803,8 +802,8 @@ func (c *StreamlineClient) DescribeConsumerGroup(ctx context.Context, groupID st
 	var result *ConsumerGroupInfo
 	err := c.withRetry(ctx, "describe consumer group", func(ctx context.Context) error {
 		resp, err := c.kafkaClient.DescribeGroups(ctx, &kafka.DescribeGroupsRequest{
-			Addr:   kafka.TCP(c.brokers[0]),
-			Groups: []string{groupID},
+			Addr:     kafka.TCP(c.brokers[0]),
+			GroupIDs: []string{groupID},
 		})
 		if err != nil {
 			return err
@@ -828,8 +827,8 @@ func (c *StreamlineClient) DescribeConsumerGroup(ctx context.Context, groupID st
 func (c *StreamlineClient) DeleteConsumerGroup(ctx context.Context, groupID string) error {
 	return c.withRetry(ctx, "delete consumer group", func(ctx context.Context) error {
 		_, err := c.kafkaClient.DeleteGroups(ctx, &kafka.DeleteGroupsRequest{
-			Addr:   kafka.TCP(c.brokers[0]),
-			Groups: []string{groupID},
+			Addr:     kafka.TCP(c.brokers[0]),
+			GroupIDs: []string{groupID},
 		})
 		return err
 	})
