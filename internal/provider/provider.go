@@ -47,12 +47,15 @@ type StreamlineProviderModel struct {
 	ConnectionTimeout types.Int64  `tfsdk:"connection_timeout"`
 	RequestTimeout    types.Int64  `tfsdk:"request_timeout"`
 	SchemaRegistryURL types.String `tfsdk:"schema_registry_url"`
+	MoonshotURL       types.String `tfsdk:"moonshot_url"`
+	MoonshotToken     types.String `tfsdk:"moonshot_token"`
 }
 
 // ProviderClients holds the initialized clients for Streamline and Schema Registry
 type ProviderClients struct {
 	Kafka          *client.StreamlineClient
 	SchemaRegistry *client.SchemaRegistryClient
+	Moonshot       *client.MoonshotClient
 }
 
 // New creates a new provider instance
@@ -164,6 +167,15 @@ resource "streamline_topic" "events" {
 				Description: "Schema Registry URL for schema management (e.g., 'http://localhost:8081')",
 				Optional:    true,
 			},
+			"moonshot_url": schema.StringAttribute{
+				Description: "Streamline Moonshot HTTP API base URL (e.g., 'http://localhost:9094'). Required to manage streamline_branch / streamline_contract resources.",
+				Optional:    true,
+			},
+			"moonshot_token": schema.StringAttribute{
+				Description: "Bearer token for the Moonshot HTTP API.",
+				Optional:    true,
+				Sensitive:   true,
+			},
 		},
 	}
 }
@@ -189,6 +201,8 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 	tlsClientCert := os.Getenv("STREAMLINE_TLS_CLIENT_CERT")
 	tlsClientKey := os.Getenv("STREAMLINE_TLS_CLIENT_KEY")
 	schemaRegistryURL := os.Getenv("STREAMLINE_SCHEMA_REGISTRY_URL")
+	moonshotURL := os.Getenv("STREAMLINE_MOONSHOT_URL")
+	moonshotToken := os.Getenv("STREAMLINE_MOONSHOT_TOKEN")
 
 	// Override with explicit configuration
 	if !config.BootstrapServers.IsNull() {
@@ -217,6 +231,12 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 	}
 	if !config.SchemaRegistryURL.IsNull() {
 		schemaRegistryURL = config.SchemaRegistryURL.ValueString()
+	}
+	if !config.MoonshotURL.IsNull() {
+		moonshotURL = config.MoonshotURL.ValueString()
+	}
+	if !config.MoonshotToken.IsNull() {
+		moonshotToken = config.MoonshotToken.ValueString()
 	}
 
 	// Validate required configuration
@@ -263,7 +283,7 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 		TLSCACertPath:  tlsCACert,
 		TLSCertPath:    tlsClientCert,
 		TLSKeyPath:     tlsClientKey,
-		TLSSkipVerify:  data.TLSSkipVerify.ValueBool(),
+		TLSSkipVerify: config.TLSSkipVerify.ValueBool(),
 	}
 
 	// Configure SASL if specified
@@ -299,6 +319,14 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 		clients.SchemaRegistry = client.NewSchemaRegistryClient(schemaRegistryConfig)
 	}
 
+	if moonshotURL != "" {
+		clients.Moonshot = client.NewMoonshotClient(client.MoonshotConfig{
+			BaseURL: moonshotURL,
+			Token:   moonshotToken,
+			Timeout: requestTimeout,
+		})
+	}
+
 	tflog.Debug(ctx, "Created Streamline clients", map[string]any{
 		"bootstrap_servers":   bootstrapServers,
 		"sasl_mechanism":      saslMechanism,
@@ -329,6 +357,9 @@ func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Re
 		resources.NewSchemaResource,
 		resources.NewUserResource,
 		resources.NewConsumerGroupResource,
+		resources.NewBranchResource,
+		resources.NewContractResource,
+		resources.NewMemoryResource,
 	}
 }
 

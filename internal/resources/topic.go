@@ -40,6 +40,9 @@ type TopicResourceModel struct {
 	RetentionBytes  types.Int64  `tfsdk:"retention_bytes"`
 	SegmentBytes    types.Int64  `tfsdk:"segment_bytes"`
 	MinInSyncReplicas types.Int64  `tfsdk:"min_insync_replicas"`
+	SemanticEmbed   types.Bool   `tfsdk:"semantic_embed"`
+	SemanticModel   types.String `tfsdk:"semantic_model"`
+	SemanticField   types.String `tfsdk:"semantic_field"`
 }
 
 // NewTopicResource creates a new topic resource
@@ -141,6 +144,20 @@ resource "streamline_topic" "user_state" {
 				Default:     int64default.StaticInt64(1),
 				Description: "Minimum number of in-sync replicas required for a write to succeed.",
 			},
+			"semantic_embed": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Enable automatic semantic embedding for messages on this topic (Moonshot M2).",
+			},
+			"semantic_model": schema.StringAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Embedding model to use when semantic_embed is enabled (e.g. 'bge-small', 'bge-large'). Default: 'bge-small'.",
+			},
+			"semantic_field": schema.StringAttribute{
+				Optional:    true,
+				Description: "JSON field path to embed when semantic_embed is enabled. When empty the entire message value is embedded.",
+			},
 		},
 	}
 }
@@ -149,6 +166,7 @@ resource "streamline_topic" "user_state" {
 type ProviderClients struct {
 	Kafka          *client.StreamlineClient
 	SchemaRegistry *client.SchemaRegistryClient
+	Moonshot       *client.MoonshotClient
 }
 
 // Configure adds the provider configured client to the resource.
@@ -206,6 +224,17 @@ func (r *TopicResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	if !plan.MinInSyncReplicas.IsNull() {
 		topicConfig.Config["min.insync.replicas"] = fmt.Sprintf("%d", plan.MinInSyncReplicas.ValueInt64())
+	}
+
+	// Set semantic configuration
+	if !plan.SemanticEmbed.IsNull() && plan.SemanticEmbed.ValueBool() {
+		topicConfig.Config["semantic.embed"] = "on"
+	}
+	if !plan.SemanticModel.IsNull() && !plan.SemanticModel.IsUnknown() {
+		topicConfig.Config["semantic.model"] = plan.SemanticModel.ValueString()
+	}
+	if !plan.SemanticField.IsNull() && !plan.SemanticField.IsUnknown() {
+		topicConfig.Config["semantic.field"] = plan.SemanticField.ValueString()
 	}
 
 	// Add any additional config from the config map
@@ -286,6 +315,20 @@ func (r *TopicResource) Create(ctx context.Context, req resource.CreateRequest, 
 				plan.MinInSyncReplicas = types.Int64Value(i)
 			}
 		}
+		// Semantic config
+		if v, ok := topicInfo.Config["semantic.embed"]; ok {
+			plan.SemanticEmbed = types.BoolValue(v == "on")
+		} else if plan.SemanticEmbed.IsNull() {
+			plan.SemanticEmbed = types.BoolValue(false)
+		}
+		if v, ok := topicInfo.Config["semantic.model"]; ok {
+			plan.SemanticModel = types.StringValue(v)
+		} else if plan.SemanticModel.IsNull() {
+			plan.SemanticModel = types.StringValue("bge-small")
+		}
+		if v, ok := topicInfo.Config["semantic.field"]; ok {
+			plan.SemanticField = types.StringValue(v)
+		}
 	}
 
 	tflog.Info(ctx, "Created topic", map[string]any{
@@ -357,6 +400,16 @@ func (r *TopicResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			state.MinInSyncReplicas = types.Int64Value(i)
 		}
 	}
+	// Semantic config
+	if v, ok := topicInfo.Config["semantic.embed"]; ok {
+		state.SemanticEmbed = types.BoolValue(v == "on")
+	}
+	if v, ok := topicInfo.Config["semantic.model"]; ok {
+		state.SemanticModel = types.StringValue(v)
+	}
+	if v, ok := topicInfo.Config["semantic.field"]; ok {
+		state.SemanticField = types.StringValue(v)
+	}
 
 	tflog.Info(ctx, "Read topic", map[string]any{
 		"name":       state.Name.ValueString(),
@@ -414,6 +467,19 @@ func (r *TopicResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	if !plan.MinInSyncReplicas.IsNull() {
 		updateConfig.Config["min.insync.replicas"] = fmt.Sprintf("%d", plan.MinInSyncReplicas.ValueInt64())
+	}
+
+	// Semantic configuration
+	if !plan.SemanticEmbed.IsNull() && plan.SemanticEmbed.ValueBool() {
+		updateConfig.Config["semantic.embed"] = "on"
+	} else if !plan.SemanticEmbed.IsNull() {
+		updateConfig.Config["semantic.embed"] = "off"
+	}
+	if !plan.SemanticModel.IsNull() && !plan.SemanticModel.IsUnknown() {
+		updateConfig.Config["semantic.model"] = plan.SemanticModel.ValueString()
+	}
+	if !plan.SemanticField.IsNull() && !plan.SemanticField.IsUnknown() {
+		updateConfig.Config["semantic.field"] = plan.SemanticField.ValueString()
 	}
 
 	// Add any additional config from the config map
