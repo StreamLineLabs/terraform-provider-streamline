@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Provider resources and data sources now receive the same configured client
+  container, fixing runtime `Configure` type assertion failures.
+- `connection_timeout` now controls Kafka connection establishment separately
+  from `request_timeout`. The default effective dial timeout is now the
+  documented 30 seconds; set `connection_timeout` explicitly for slower
+  networks.
+
+### Changed
+
+- Internal Kafka administration and provider configuration responsibilities are
+  split into focused modules without changing Terraform resource schemas.
+
 
 ## [0.3.0] - 2026-04-20
 
