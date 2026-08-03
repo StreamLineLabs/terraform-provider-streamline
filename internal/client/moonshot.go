@@ -85,8 +85,8 @@ type Memory struct {
 
 // MemoryTiers holds retention settings for each memory tier.
 type MemoryTiers struct {
-	EpisodicRetentionDays  int64 `json:"episodic_retention_days"`
-	SemanticRetentionDays  int64 `json:"semantic_retention_days"`
+	EpisodicRetentionDays   int64 `json:"episodic_retention_days"`
+	SemanticRetentionDays   int64 `json:"semantic_retention_days"`
 	ProceduralRetentionDays int64 `json:"procedural_retention_days"`
 }
 
@@ -223,8 +223,11 @@ func (c *MoonshotClient) doJSON(ctx context.Context, method, path string, body, 
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	defer closeQuietly(ctx, resp.Body, "moonshot response body")
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("%s: read response body: %w", op, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &MoonshotError{Status: resp.StatusCode, Body: string(respBody), Op: op}
 	}

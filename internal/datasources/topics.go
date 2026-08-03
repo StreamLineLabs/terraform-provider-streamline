@@ -122,11 +122,11 @@ func (d *TopicsDataSource) Configure(ctx context.Context, req datasource.Configu
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}
@@ -216,4 +216,5 @@ func (d *TopicsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
+
 // correct import ID format for cluster resource

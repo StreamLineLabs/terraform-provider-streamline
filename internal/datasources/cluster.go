@@ -19,12 +19,6 @@ import (
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ datasource.DataSource = &ClusterDataSource{}
 
-// ProviderClients is a type alias to access the provider's client container
-type ProviderClients struct {
-	Kafka          *client.StreamlineClient
-	SchemaRegistry *client.SchemaRegistryClient
-}
-
 // ClusterDataSource defines the data source implementation.
 type ClusterDataSource struct {
 	kafkaClient *client.StreamlineClient
@@ -130,11 +124,11 @@ func (d *ClusterDataSource) Configure(ctx context.Context, req datasource.Config
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}

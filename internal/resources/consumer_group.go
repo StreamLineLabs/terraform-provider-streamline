@@ -77,13 +77,13 @@ func (r *ConsumerGroupResource) Configure(ctx context.Context, req resource.Conf
 	if req.ProviderData == nil {
 		return
 	}
-	kafkaClient, ok := req.ProviderData.(*client.StreamlineClient)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *client.StreamlineClient, got: %T", req.ProviderData))
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData))
 		return
 	}
-	r.kafkaClient = kafkaClient
+	r.kafkaClient = clients.Kafka
 }
 
 func (r *ConsumerGroupResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

@@ -41,9 +41,9 @@ func TestAccSchemaResource_avro(t *testing.T) {
 			},
 			// ImportState
 			{
-				ResourceName:      "streamline_schema.test",
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            "streamline_schema.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"schema"},
 			},
 		},

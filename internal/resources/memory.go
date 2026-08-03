@@ -29,15 +29,15 @@ type MemoryResource struct {
 
 // MemoryResourceModel describes the resource data model.
 type MemoryResourceModel struct {
-	ID                   types.String `tfsdk:"id"`
-	AgentID              types.String `tfsdk:"agent_id"`
-	Tenant               types.String `tfsdk:"tenant"`
-	EpisodicRetentionDays types.Int64  `tfsdk:"episodic_retention_days"`
-	SemanticRetentionDays types.Int64  `tfsdk:"semantic_retention_days"`
-	ProceduralRetentionDays types.Int64 `tfsdk:"procedural_retention_days"`
-	DecayHalfLifeDays    types.Float64 `tfsdk:"decay_half_life_days"`
-	DecayThreshold       types.Float64 `tfsdk:"decay_threshold"`
-	EncryptionEnabled    types.Bool   `tfsdk:"encryption_enabled"`
+	ID                      types.String  `tfsdk:"id"`
+	AgentID                 types.String  `tfsdk:"agent_id"`
+	Tenant                  types.String  `tfsdk:"tenant"`
+	EpisodicRetentionDays   types.Int64   `tfsdk:"episodic_retention_days"`
+	SemanticRetentionDays   types.Int64   `tfsdk:"semantic_retention_days"`
+	ProceduralRetentionDays types.Int64   `tfsdk:"procedural_retention_days"`
+	DecayHalfLifeDays       types.Float64 `tfsdk:"decay_half_life_days"`
+	DecayThreshold          types.Float64 `tfsdk:"decay_threshold"`
+	EncryptionEnabled       types.Bool    `tfsdk:"encryption_enabled"`
 }
 
 // NewMemoryResource builds a new memory resource.
@@ -115,10 +115,10 @@ func (r *MemoryResource) Configure(_ context.Context, req resource.ConfigureRequ
 	if req.ProviderData == nil {
 		return
 	}
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData))
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData))
 		return
 	}
 	if clients.Moonshot == nil {
@@ -131,11 +131,11 @@ func (r *MemoryResource) Configure(_ context.Context, req resource.ConfigureRequ
 
 func (r *MemoryResource) buildMemory(data MemoryResourceModel) client.Memory {
 	m := client.Memory{
-		AgentID:  data.AgentID.ValueString(),
-		Tenant:   data.Tenant.ValueString(),
+		AgentID: data.AgentID.ValueString(),
+		Tenant:  data.Tenant.ValueString(),
 		Tiers: client.MemoryTiers{
-			EpisodicRetentionDays:  data.EpisodicRetentionDays.ValueInt64(),
-			SemanticRetentionDays:  data.SemanticRetentionDays.ValueInt64(),
+			EpisodicRetentionDays:   data.EpisodicRetentionDays.ValueInt64(),
+			SemanticRetentionDays:   data.SemanticRetentionDays.ValueInt64(),
 			ProceduralRetentionDays: data.ProceduralRetentionDays.ValueInt64(),
 		},
 		EncryptionEnabled: data.EncryptionEnabled.ValueBool(),

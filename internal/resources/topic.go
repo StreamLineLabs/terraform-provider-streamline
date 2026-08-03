@@ -30,19 +30,19 @@ type TopicResource struct {
 
 // TopicResourceModel describes the resource data model.
 type TopicResourceModel struct {
-	ID              types.String `tfsdk:"id"`
-	Name            types.String `tfsdk:"name"`
-	Partitions      types.Int64  `tfsdk:"partitions"`
+	ID                types.String `tfsdk:"id"`
+	Name              types.String `tfsdk:"name"`
+	Partitions        types.Int64  `tfsdk:"partitions"`
 	ReplicationFactor types.Int64  `tfsdk:"replication_factor"`
-	Config          types.Map    `tfsdk:"config"`
-	CleanupPolicy   types.String `tfsdk:"cleanup_policy"`
-	RetentionMs     types.Int64  `tfsdk:"retention_ms"`
-	RetentionBytes  types.Int64  `tfsdk:"retention_bytes"`
-	SegmentBytes    types.Int64  `tfsdk:"segment_bytes"`
+	Config            types.Map    `tfsdk:"config"`
+	CleanupPolicy     types.String `tfsdk:"cleanup_policy"`
+	RetentionMs       types.Int64  `tfsdk:"retention_ms"`
+	RetentionBytes    types.Int64  `tfsdk:"retention_bytes"`
+	SegmentBytes      types.Int64  `tfsdk:"segment_bytes"`
 	MinInSyncReplicas types.Int64  `tfsdk:"min_insync_replicas"`
-	SemanticEmbed   types.Bool   `tfsdk:"semantic_embed"`
-	SemanticModel   types.String `tfsdk:"semantic_model"`
-	SemanticField   types.String `tfsdk:"semantic_field"`
+	SemanticEmbed     types.Bool   `tfsdk:"semantic_embed"`
+	SemanticModel     types.String `tfsdk:"semantic_model"`
+	SemanticField     types.String `tfsdk:"semantic_field"`
 }
 
 // NewTopicResource creates a new topic resource
@@ -105,10 +105,10 @@ resource "streamline_topic" "user_state" {
 				Description: "The number of partitions for the topic. Can only be increased, not decreased.",
 			},
 			"replication_factor": schema.Int64Attribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     int64default.StaticInt64(1),
-				Description: "The replication factor for the topic (default: 1).",
+				Optional:      true,
+				Computed:      true,
+				Default:       int64default.StaticInt64(1),
+				Description:   "The replication factor for the topic (default: 1).",
 				PlanModifiers: []planmodifier.Int64{
 					// Replication factor cannot be changed after creation
 				},
@@ -162,24 +162,17 @@ resource "streamline_topic" "user_state" {
 	}
 }
 
-// ProviderClients is a type alias to access the provider's client container
-type ProviderClients struct {
-	Kafka          *client.StreamlineClient
-	SchemaRegistry *client.SchemaRegistryClient
-	Moonshot       *client.MoonshotClient
-}
-
 // Configure adds the provider configured client to the resource.
 func (r *TopicResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}
@@ -545,4 +538,3 @@ func (r *TopicResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 func (r *TopicResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
-

@@ -80,10 +80,10 @@ func (r *BranchResource) Configure(_ context.Context, req resource.ConfigureRequ
 	if req.ProviderData == nil {
 		return
 	}
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData))
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData))
 		return
 	}
 	if clients.Moonshot == nil {

@@ -30,14 +30,14 @@ type AclResource struct {
 
 // AclResourceModel describes the ACL resource data model.
 type AclResourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	ResourceType     types.String `tfsdk:"resource_type"`
-	ResourceName     types.String `tfsdk:"resource_name"`
-	PatternType      types.String `tfsdk:"pattern_type"`
-	Principal        types.String `tfsdk:"principal"`
-	Host             types.String `tfsdk:"host"`
-	Operation        types.String `tfsdk:"operation"`
-	PermissionType   types.String `tfsdk:"permission_type"`
+	ID             types.String `tfsdk:"id"`
+	ResourceType   types.String `tfsdk:"resource_type"`
+	ResourceName   types.String `tfsdk:"resource_name"`
+	PatternType    types.String `tfsdk:"pattern_type"`
+	Principal      types.String `tfsdk:"principal"`
+	Host           types.String `tfsdk:"host"`
+	Operation      types.String `tfsdk:"operation"`
+	PermissionType types.String `tfsdk:"permission_type"`
 }
 
 // NewAclResource creates a new ACL resource
@@ -179,11 +179,11 @@ func (r *AclResource) Configure(ctx context.Context, req resource.ConfigureReque
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}
@@ -345,4 +345,3 @@ func (r *AclResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		"id": state.ID.ValueString(),
 	})
 }
-

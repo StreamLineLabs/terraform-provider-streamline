@@ -23,17 +23,17 @@ import (
 
 // StreamlineClient provides methods for interacting with Streamline/Kafka clusters
 type StreamlineClient struct {
-	brokers      []string
-	dialer       *kafka.Dialer
-	kafkaClient  *kafka.Client
-	tlsConfig    *tls.Config
-	sasl         sasl.Mechanism
-	timeout      time.Duration
-	maxRetries   int
-	mu           sync.RWMutex
-	closing      bool
-	inflight     sync.WaitGroup
-	httpClient   *http.Client
+	brokers     []string
+	dialer      *kafka.Dialer
+	kafkaClient *kafka.Client
+	tlsConfig   *tls.Config
+	sasl        sasl.Mechanism
+	timeout     time.Duration
+	maxRetries  int
+	mu          sync.RWMutex
+	closing     bool
+	inflight    sync.WaitGroup
+	httpClient  *http.Client
 }
 
 // Config holds configuration for creating a StreamlineClient via NewStreamlineClient.
@@ -100,9 +100,9 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 
 	// Create kafka.Client for admin operations (ACLs, partitions)
 	transport := &kafka.Transport{
-		Dial:    client.dialer.DialFunc,
-		TLS:     client.tlsConfig,
-		SASL:    client.sasl,
+		Dial: client.dialer.DialFunc,
+		TLS:  client.tlsConfig,
+		SASL: client.sasl,
 	}
 	client.kafkaClient = &kafka.Client{
 		Addr:      kafka.TCP(cfg.Brokers[0]),
@@ -111,48 +111,6 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 	}
 
 	return client, nil
-}
-
-// parseBrokers splits a comma-separated list of brokers
-func parseBrokers(servers string) []string {
-	var brokers []string
-	for _, s := range splitAndTrim(servers, ",") {
-		if s != "" {
-			brokers = append(brokers, s)
-		}
-	}
-	return brokers
-}
-
-func splitAndTrim(s, sep string) []string {
-	var result []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if i < len(s)-len(sep)+1 && s[i:i+len(sep)] == sep {
-			part := trim(s[start:i])
-			if part != "" {
-				result = append(result, part)
-			}
-			start = i + len(sep)
-		}
-	}
-	part := trim(s[start:])
-	if part != "" {
-		result = append(result, part)
-	}
-	return result
-}
-
-func trim(s string) string {
-	start := 0
-	end := len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
 }
 
 func createSASLMechanism(mechanism, username, password string) (sasl.Mechanism, error) {
@@ -179,7 +137,11 @@ func createTLSConfig(caCert, clientCert, clientKey string, skipVerify bool) (*tl
 
 	// Load custom CA certificate if provided
 	if caCert != "" {
-		caCertData, err := os.ReadFile(caCert)
+		// The CA certificate path comes from the provider's tls_ca_cert
+		// attribute (or STREAMLINE_TLS_CA_CERT). Reading an operator-supplied
+		// path is exactly the purpose of this option, so the variable file
+		// path is intentional and scoped to this single read.
+		caCertData, err := os.ReadFile(caCert) // #nosec G304 -- operator-configured CA certificate path
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA certificate %s: %w", caCert, err)
 		}
@@ -237,7 +199,7 @@ func (c *StreamlineClient) CreateTopic(ctx context.Context, cfg TopicConfig) err
 		if err != nil {
 			return fmt.Errorf("failed to connect to controller: %w", err)
 		}
-		defer conn.Close()
+		defer closeQuietly(ctx, conn, "controller connection")
 
 		topicConfigs := make([]kafka.TopicConfig, 1)
 		topicConfigs[0] = kafka.TopicConfig{
@@ -268,7 +230,7 @@ func (c *StreamlineClient) GetTopic(ctx context.Context, name string) (*TopicMet
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to controller: %w", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(ctx, conn, "controller connection")
 
 	partitions, err := conn.ReadPartitions(name)
 	if err != nil {
@@ -300,11 +262,15 @@ func (c *StreamlineClient) UpdateTopic(ctx context.Context, cfg TopicConfig) err
 
 	// Create additional partitions if needed using kafka.Client API
 	if cfg.Partitions > current.Partitions {
+		count, err := toPartitionCount(cfg.Partitions)
+		if err != nil {
+			return err
+		}
 		resp, err := c.kafkaClient.CreatePartitions(ctx, &kafka.CreatePartitionsRequest{
 			Topics: []kafka.TopicPartitionsConfig{
 				{
 					Name:  cfg.Name,
-					Count: int32(cfg.Partitions),
+					Count: count,
 				},
 			},
 		})
@@ -328,7 +294,7 @@ func (c *StreamlineClient) DeleteTopic(ctx context.Context, name string) error {
 		if err != nil {
 			return fmt.Errorf("failed to connect to controller: %w", err)
 		}
-		defer conn.Close()
+		defer closeQuietly(ctx, conn, "controller connection")
 
 		return conn.DeleteTopics(name)
 	})
@@ -340,7 +306,7 @@ func (c *StreamlineClient) ListTopics(ctx context.Context) ([]TopicMetadata, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to controller: %w", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(ctx, conn, "controller connection")
 
 	partitions, err := conn.ReadPartitions()
 	if err != nil {
@@ -349,7 +315,8 @@ func (c *StreamlineClient) ListTopics(ctx context.Context) ([]TopicMetadata, err
 
 	// Group by topic
 	topicMap := make(map[string]*TopicMetadata)
-	for _, p := range partitions {
+	for i := range partitions {
+		p := &partitions[i]
 		if _, exists := topicMap[p.Topic]; !exists {
 			topicMap[p.Topic] = &TopicMetadata{
 				Name:              p.Topic,
@@ -492,7 +459,7 @@ func (c *StreamlineClient) GetClusterMetadata(ctx context.Context) (*ClusterMeta
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to controller: %w", err)
 	}
-	defer conn.Close()
+	defer closeQuietly(ctx, conn, "controller connection")
 
 	brokers, err := conn.Brokers()
 	if err != nil {
@@ -505,15 +472,8 @@ func (c *StreamlineClient) GetClusterMetadata(ctx context.Context) (*ClusterMeta
 	}
 
 	brokerInfos := make([]BrokerInfo, 0, len(brokers))
-	for _, b := range brokers {
-		host, portStr, _ := net.SplitHostPort(b.Host)
-		port := 9092
-		fmt.Sscanf(portStr, "%d", &port)
-		brokerInfos = append(brokerInfos, BrokerInfo{
-			ID:   b.ID,
-			Host: host,
-			Port: port,
-		})
+	for i := range brokers {
+		brokerInfos = append(brokerInfos, brokerInfo(&brokers[i]))
 	}
 
 	return &ClusterMetadata{
@@ -526,6 +486,32 @@ func (c *StreamlineClient) GetClusterMetadata(ctx context.Context) (*ClusterMeta
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+// defaultKafkaPort is assumed when a broker advertises an address without a
+// usable port component.
+const defaultKafkaPort = 9092
+
+func brokerInfo(broker *kafka.Broker) BrokerInfo {
+	port := broker.Port
+	if port == 0 {
+		port = defaultKafkaPort
+	}
+	return BrokerInfo{
+		ID:   broker.ID,
+		Host: broker.Host,
+		Port: port,
+		Rack: broker.Rack,
+	}
+}
+
+// toPartitionCount converts a partition count to the int32 the Kafka protocol
+// uses on the wire, rejecting values that cannot be represented.
+func toPartitionCount(partitions int) (int32, error) {
+	if partitions <= 0 || partitions > math.MaxInt32 {
+		return 0, fmt.Errorf("invalid partition count %d: must be between 1 and %d", partitions, math.MaxInt32)
+	}
+	return int32(partitions), nil
+}
 
 // withRetry executes fn with exponential backoff retry on transient errors.
 // Base delay is 1s, doubling each attempt, capped at 10s.
@@ -559,7 +545,7 @@ func (c *StreamlineClient) getControllerConn(ctx context.Context) (*kafka.Conn, 
 	// Get the controller
 	controller, err := conn.Controller()
 	if err != nil {
-		conn.Close()
+		closeQuietly(ctx, conn, "broker connection")
 		return nil, err
 	}
 
@@ -569,7 +555,7 @@ func (c *StreamlineClient) getControllerConn(ctx context.Context) (*kafka.Conn, 
 	}
 
 	// Otherwise, connect to the controller
-	conn.Close()
+	closeQuietly(ctx, conn, "broker connection")
 	return c.dialer.DialContext(ctx, "tcp", net.JoinHostPort(controller.Host, fmt.Sprintf("%d", controller.Port)))
 }
 
@@ -767,7 +753,6 @@ func (c *StreamlineClient) Close() error {
 	// kafka-go connections are closed individually
 	return nil
 }
-
 
 // ConsumerGroupInfo holds metadata about a consumer group.
 type ConsumerGroupInfo struct {

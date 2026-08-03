@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,20 +50,7 @@ type StreamlineProviderModel struct {
 	MoonshotToken     types.String `tfsdk:"moonshot_token"`
 }
 
-// ProviderClients holds the initialized clients for Streamline and Schema Registry
-type ProviderClients struct {
-	Kafka          *client.StreamlineClient
-	SchemaRegistry *client.SchemaRegistryClient
-	Moonshot       *client.MoonshotClient
-}
-
 // New creates a new provider instance
-const (
-	defaultCreateTimeout = 30 * time.Second
-	defaultReadTimeout   = 10 * time.Second
-	defaultDeleteTimeout = 30 * time.Second
-)
-
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &StreamlineProvider{
@@ -277,12 +263,12 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 
 	// Create Kafka client configuration
 	kafkaConfig := client.Config{
-		Brokers:        brokers,
-		Timeout:        requestTimeout,
-		TLSEnabled:     tlsEnabled,
-		TLSCACertPath:  tlsCACert,
-		TLSCertPath:    tlsClientCert,
-		TLSKeyPath:     tlsClientKey,
+		Brokers:       brokers,
+		Timeout:       requestTimeout,
+		TLSEnabled:    tlsEnabled,
+		TLSCACertPath: tlsCACert,
+		TLSCertPath:   tlsClientCert,
+		TLSKeyPath:    tlsClientKey,
 		TLSSkipVerify: config.TLSSkipVerify.ValueBool(),
 	}
 
@@ -304,7 +290,7 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 	}
 
 	// Create clients container
-	clients := &ProviderClients{
+	clients := &client.Clients{
 		Kafka: kafkaClient,
 	}
 
@@ -339,16 +325,6 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 	resp.ResourceData = clients
 }
 
-// Helper to extract integer from environment variable
-func getEnvInt(key string, defaultVal int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return defaultVal
-}
-
 // Resources defines the resources implemented in the provider.
 func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
@@ -370,5 +346,3 @@ func (p *StreamlineProvider) DataSources(ctx context.Context) []func() datasourc
 		datasources.NewTopicsDataSource,
 	}
 }
-
-

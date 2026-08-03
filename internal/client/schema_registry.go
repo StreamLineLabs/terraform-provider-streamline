@@ -121,11 +121,10 @@ func (c *SchemaRegistryClient) RegisterSchema(ctx context.Context, cfg SchemaCon
 	if err != nil {
 		return 0, fmt.Errorf("failed to register schema: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("failed to register schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return 0, responseError("register schema", resp)
 	}
 
 	var result registerSchemaResponse
@@ -145,7 +144,7 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 
 	url := fmt.Sprintf("%s/subjects/%s/versions/%s", c.baseURL, subject, versionStr)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -157,15 +156,14 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("schema not found: %s version %s", subject, versionStr)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, responseError("get schema", resp)
 	}
 
 	var result SchemaInfo
@@ -180,7 +178,7 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 func (c *SchemaRegistryClient) GetSchemaByID(ctx context.Context, id int) (string, error) {
 	url := fmt.Sprintf("%s/schemas/ids/%d", c.baseURL, id)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -192,11 +190,10 @@ func (c *SchemaRegistryClient) GetSchemaByID(ctx context.Context, id int) (strin
 	if err != nil {
 		return "", fmt.Errorf("failed to get schema: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return "", responseError("get schema", resp)
 	}
 
 	var result struct {
@@ -216,7 +213,7 @@ func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string,
 		url += "?permanent=true"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -227,11 +224,10 @@ func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string,
 	if err != nil {
 		return fmt.Errorf("failed to delete schema: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to delete schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return responseError("delete schema", resp)
 	}
 
 	return nil
@@ -262,11 +258,10 @@ func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, le
 	if err != nil {
 		return fmt.Errorf("failed to set compatibility: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to set compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return responseError("set compatibility", resp)
 	}
 
 	return nil
@@ -276,7 +271,7 @@ func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, le
 func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject string) (string, error) {
 	url := fmt.Sprintf("%s/config/%s", c.baseURL, subject)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -288,7 +283,7 @@ func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject str
 	if err != nil {
 		return "", fmt.Errorf("failed to get compatibility: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode == http.StatusNotFound {
 		// Return global default
@@ -296,8 +291,7 @@ func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject str
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return "", responseError("get compatibility", resp)
 	}
 
 	var result configResponse
@@ -312,7 +306,7 @@ func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject str
 func (c *SchemaRegistryClient) ListSubjects(ctx context.Context) ([]string, error) {
 	url := fmt.Sprintf("%s/subjects", c.baseURL)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -324,11 +318,10 @@ func (c *SchemaRegistryClient) ListSubjects(ctx context.Context) ([]string, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to list subjects: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to list subjects: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, responseError("list subjects", resp)
 	}
 
 	var subjects []string
@@ -365,7 +358,7 @@ func (c *SchemaRegistryClient) CheckCompatibility(ctx context.Context, subject, 
 	if err != nil {
 		return false, fmt.Errorf("failed to check compatibility: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
 
 	if resp.StatusCode == http.StatusNotFound {
 		// No existing schema, so any schema is compatible
@@ -373,8 +366,7 @@ func (c *SchemaRegistryClient) CheckCompatibility(ctx context.Context, subject, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("failed to check compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return false, responseError("check compatibility", resp)
 	}
 
 	var result compatibilityResponse
@@ -389,4 +381,16 @@ func (c *SchemaRegistryClient) setAuth(req *http.Request) {
 	if c.username != "" && c.password != "" {
 		req.SetBasicAuth(c.username, c.password)
 	}
+}
+
+// responseError builds an error for a non-success Schema Registry response.
+// The registry encodes its error_code/message payload in the body, so the body
+// is included verbatim; a body that cannot be read is reported as such rather
+// than silently dropped.
+func responseError(op string, resp *http.Response) error {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to %s: status %d, could not read response body: %w", op, resp.StatusCode, err)
+	}
+	return fmt.Errorf("failed to %s: status %d, body: %s", op, resp.StatusCode, string(bodyBytes))
 }

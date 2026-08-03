@@ -71,4 +71,3 @@ resource "streamline_user" "test" {
 }
 `, username, mechanism)
 }
-

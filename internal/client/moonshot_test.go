@@ -11,16 +11,15 @@ import (
 	"testing"
 )
 
-func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *MoonshotClient) {
+func newTestServer(t *testing.T, handler http.HandlerFunc) *MoonshotClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := NewMoonshotClient(MoonshotConfig{BaseURL: srv.URL, Token: "tok"})
-	return srv, c
+	return NewMoonshotClient(MoonshotConfig{BaseURL: srv.URL, Token: "tok"})
 }
 
 func TestMoonshotClient_ListBranches(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/branches" || r.Method != http.MethodGet {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -41,7 +40,7 @@ func TestMoonshotClient_ListBranches(t *testing.T) {
 }
 
 func TestMoonshotClient_GetBranch_FoundAndMissing(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(listBranchesResponse{
 			Branches: []Branch{{Name: "main"}, {Name: "exp", Parent: "main"}},
 		})
@@ -57,7 +56,7 @@ func TestMoonshotClient_GetBranch_FoundAndMissing(t *testing.T) {
 }
 
 func TestMoonshotClient_CreateAndDeleteBranch(t *testing.T) {
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/branches":
 			var in map[string]interface{}
@@ -72,7 +71,6 @@ func TestMoonshotClient_CreateAndDeleteBranch(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	})
-	_ = srv
 	b, err := c.CreateBranch(context.Background(), "exp", "main")
 	if err != nil || b == nil || b.Name != "exp" {
 		t.Fatalf("create: %+v %v", b, err)
@@ -83,7 +81,7 @@ func TestMoonshotClient_CreateAndDeleteBranch(t *testing.T) {
 }
 
 func TestMoonshotClient_RegisterAndGetContract(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/contracts":
 			_ = json.NewEncoder(w).Encode(Contract{
@@ -120,7 +118,7 @@ func TestMoonshotClient_RegisterAndGetContract(t *testing.T) {
 }
 
 func TestMoonshotClient_NonNotFoundErrorBubbles(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
 	})
 	_, err := c.ListBranches(context.Background())
