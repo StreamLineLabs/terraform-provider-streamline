@@ -6,6 +6,8 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -419,6 +421,149 @@ func TestSchemaRegistryClient_MalformedResponseBody(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "failed to decode response") {
 				t.Errorf("error = %q, want it to mention decode failure", err.Error())
+			}
+		})
+	}
+}
+
+// unreadableBody is an io.ReadCloser whose Read always fails, simulating a
+// connection that terminates before any response body bytes are received
+// (e.g. a truncated 404 response with no payload).
+type unreadableBody struct {
+	err error
+}
+
+func (b *unreadableBody) Read(_ []byte) (int, error) { return 0, b.err }
+func (b *unreadableBody) Close() error               { return nil }
+
+// statusOnlyRoundTripper is an http.RoundTripper stub that always returns a
+// response with the configured status code whose body immediately fails to
+// read with bodyErr. It is used to verify that operations which special-case
+// a status code (e.g. 404) do not depend on successfully reading the
+// response body to take that fast path.
+type statusOnlyRoundTripper struct {
+	statusCode int
+	bodyErr    error
+}
+
+func (rt *statusOnlyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: rt.statusCode,
+		Status:     http.StatusText(rt.statusCode),
+		Body:       &unreadableBody{err: rt.bodyErr},
+		Header:     make(http.Header),
+	}, nil
+}
+
+// newSchemaRegistryClientWithTransport returns a SchemaRegistryClient whose
+// underlying http.Client uses rt instead of talking to a real server.
+func newSchemaRegistryClientWithTransport(rt http.RoundTripper) *SchemaRegistryClient {
+	c := NewSchemaRegistryClient(SchemaRegistryConfig{URL: "http://schema-registry.invalid"})
+	c.httpClient.Transport = rt
+	return c
+}
+
+// TestSchemaRegistryClient_NotFoundFastPath_SurvivesUnreadableBody verifies
+// that GetSchema, GetCompatibility, and CheckCompatibility take their 404
+// fast path from the status code alone, even when the response body cannot
+// be read at all.
+func TestSchemaRegistryClient_NotFoundFastPath_SurvivesUnreadableBody(t *testing.T) {
+	t.Parallel()
+
+	rt := &statusOnlyRoundTripper{statusCode: http.StatusNotFound, bodyErr: io.ErrUnexpectedEOF}
+
+	t.Run("GetSchema", func(t *testing.T) {
+		t.Parallel()
+		c := newSchemaRegistryClientWithTransport(rt)
+
+		_, err := c.GetSchema(context.Background(), "orders-value", 0)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		const want = "schema not found: orders-value version latest"
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("GetCompatibility", func(t *testing.T) {
+		t.Parallel()
+		c := newSchemaRegistryClientWithTransport(rt)
+
+		got, err := c.GetCompatibility(context.Background(), "orders-value")
+		if err != nil {
+			t.Fatalf("GetCompatibility() error = %v", err)
+		}
+		if got != "BACKWARD" {
+			t.Errorf("compatibility = %q, want BACKWARD", got)
+		}
+	})
+
+	t.Run("CheckCompatibility", func(t *testing.T) {
+		t.Parallel()
+		c := newSchemaRegistryClientWithTransport(rt)
+
+		got, err := c.CheckCompatibility(context.Background(), "orders-value", `{"type":"record"}`, "AVRO")
+		if err != nil {
+			t.Fatalf("CheckCompatibility() error = %v", err)
+		}
+		if !got {
+			t.Error("compatible = false, want true for 404 (no existing schema)")
+		}
+	})
+}
+
+// TestSchemaRegistryClient_SuccessWithUnreadableBody verifies that a 200
+// response whose body fails to read still surfaces an error, instead of
+// being silently treated as success, for representative GET and POST
+// operations that decode a body on success.
+func TestSchemaRegistryClient_SuccessWithUnreadableBody(t *testing.T) {
+	t.Parallel()
+
+	rt := &statusOnlyRoundTripper{statusCode: http.StatusOK, bodyErr: io.ErrUnexpectedEOF}
+
+	tests := []struct {
+		name string
+		call func(c *SchemaRegistryClient) error
+	}{
+		{
+			name: "ListSubjects",
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.ListSubjects(context.Background())
+				return err
+			},
+		},
+		{
+			name: "GetCompatibility",
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.GetCompatibility(context.Background(), "orders-value")
+				return err
+			},
+		},
+		{
+			name: "CheckCompatibility",
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.CheckCompatibility(context.Background(), "orders-value", `{"type":"record"}`, "AVRO")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchemaRegistryClientWithTransport(rt)
+
+			err := tt.call(c)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "could not read response body") {
+				t.Errorf("error = %q, want it to mention the unreadable body", err.Error())
+			}
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("error = %v, want it to wrap io.ErrUnexpectedEOF", err)
 			}
 		})
 	}
