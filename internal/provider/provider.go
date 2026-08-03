@@ -5,21 +5,14 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net"
-	"os"
-	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/streamlinelabs/terraform-provider-streamline/internal/client"
 	"github.com/streamlinelabs/terraform-provider-streamline/internal/datasources"
 	"github.com/streamlinelabs/terraform-provider-streamline/internal/resources"
 )
@@ -170,155 +163,33 @@ resource "streamline_topic" "events" {
 func (p *StreamlineProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	tflog.Info(ctx, "Configuring Streamline provider")
 
-	var config StreamlineProviderModel
+	var model StreamlineProviderModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &model)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Default values from environment variables
-	bootstrapServers := os.Getenv("STREAMLINE_BOOTSTRAP_SERVERS")
-	saslMechanism := os.Getenv("STREAMLINE_SASL_MECHANISM")
-	saslUsername := os.Getenv("STREAMLINE_SASL_USERNAME")
-	saslPassword := os.Getenv("STREAMLINE_SASL_PASSWORD")
-	tlsEnabled := os.Getenv("STREAMLINE_TLS_ENABLED") == "true"
-	tlsCACert := os.Getenv("STREAMLINE_TLS_CA_CERT")
-	tlsClientCert := os.Getenv("STREAMLINE_TLS_CLIENT_CERT")
-	tlsClientKey := os.Getenv("STREAMLINE_TLS_CLIENT_KEY")
-	schemaRegistryURL := os.Getenv("STREAMLINE_SCHEMA_REGISTRY_URL")
-	moonshotURL := os.Getenv("STREAMLINE_MOONSHOT_URL")
-	moonshotToken := os.Getenv("STREAMLINE_MOONSHOT_TOKEN")
+	config := resolveProviderConfig(model)
 
-	// Override with explicit configuration
-	if !config.BootstrapServers.IsNull() {
-		bootstrapServers = config.BootstrapServers.ValueString()
-	}
-	if !config.SaslMechanism.IsNull() {
-		saslMechanism = config.SaslMechanism.ValueString()
-	}
-	if !config.SaslUsername.IsNull() {
-		saslUsername = config.SaslUsername.ValueString()
-	}
-	if !config.SaslPassword.IsNull() {
-		saslPassword = config.SaslPassword.ValueString()
-	}
-	if !config.TLSEnabled.IsNull() {
-		tlsEnabled = config.TLSEnabled.ValueBool()
-	}
-	if !config.TLSCACert.IsNull() {
-		tlsCACert = config.TLSCACert.ValueString()
-	}
-	if !config.TLSClientCert.IsNull() {
-		tlsClientCert = config.TLSClientCert.ValueString()
-	}
-	if !config.TLSClientKey.IsNull() {
-		tlsClientKey = config.TLSClientKey.ValueString()
-	}
-	if !config.SchemaRegistryURL.IsNull() {
-		schemaRegistryURL = config.SchemaRegistryURL.ValueString()
-	}
-	if !config.MoonshotURL.IsNull() {
-		moonshotURL = config.MoonshotURL.ValueString()
-	}
-	if !config.MoonshotToken.IsNull() {
-		moonshotToken = config.MoonshotToken.ValueString()
-	}
-
-	// Validate required configuration
-	if bootstrapServers == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("bootstrap_servers"),
-			"Missing Streamline Bootstrap Servers",
-			"The provider cannot create the Streamline client as there is a missing or empty value for the Streamline bootstrap servers. "+
-				"Set the bootstrap_servers value in the configuration or use the STREAMLINE_BOOTSTRAP_SERVERS environment variable.",
-		)
+	brokers, diags := validateBootstrapServers(config.bootstrapServers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Validate bootstrap servers format and parse brokers
-	var brokers []string
-	for _, server := range strings.Split(bootstrapServers, ",") {
-		server = strings.TrimSpace(server)
-		if _, _, err := net.SplitHostPort(server); err != nil {
-			resp.Diagnostics.AddAttributeError(
-				path.Root("bootstrap_servers"),
-				"Invalid Bootstrap Server Format",
-				fmt.Sprintf("Invalid bootstrap server '%s': %s. Expected format: 'host:port'", server, err),
-			)
-			return
-		}
-		brokers = append(brokers, server)
-	}
-
-	// Parse timeouts
-	connectionTimeout := 30 * time.Second
-	requestTimeout := 60 * time.Second
-	if !config.ConnectionTimeout.IsNull() {
-		connectionTimeout = time.Duration(config.ConnectionTimeout.ValueInt64()) * time.Second
-	}
-	if !config.RequestTimeout.IsNull() {
-		requestTimeout = time.Duration(config.RequestTimeout.ValueInt64()) * time.Second
-	}
-
-	// Create Kafka client configuration
-	kafkaConfig := client.Config{
-		Brokers:       brokers,
-		Timeout:       requestTimeout,
-		TLSEnabled:    tlsEnabled,
-		TLSCACertPath: tlsCACert,
-		TLSCertPath:   tlsClientCert,
-		TLSKeyPath:    tlsClientKey,
-		TLSSkipVerify: config.TLSSkipVerify.ValueBool(),
-	}
-
-	// Configure SASL if specified
-	if saslMechanism != "" {
-		kafkaConfig.SASLMechanism = saslMechanism
-		kafkaConfig.SASLUsername = saslUsername
-		kafkaConfig.SASLPassword = saslPassword
-	}
-
-	// Create Kafka client
-	kafkaClient, err := client.NewStreamlineClient(kafkaConfig)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to Create Kafka Client",
-			fmt.Sprintf("Unable to create Streamline Kafka client: %s", err),
-		)
+	clients, diags := newProviderClients(config, brokers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
-	}
-
-	// Create clients container
-	clients := &client.Clients{
-		Kafka: kafkaClient,
-	}
-
-	// Create Schema Registry client if URL is provided
-	if schemaRegistryURL != "" {
-		schemaRegistryConfig := client.SchemaRegistryConfig{
-			URL:      schemaRegistryURL,
-			Username: saslUsername, // Reuse SASL credentials
-			Password: saslPassword,
-			Timeout:  requestTimeout,
-		}
-		clients.SchemaRegistry = client.NewSchemaRegistryClient(schemaRegistryConfig)
-	}
-
-	if moonshotURL != "" {
-		clients.Moonshot = client.NewMoonshotClient(client.MoonshotConfig{
-			BaseURL: moonshotURL,
-			Token:   moonshotToken,
-			Timeout: requestTimeout,
-		})
 	}
 
 	tflog.Debug(ctx, "Created Streamline clients", map[string]any{
-		"bootstrap_servers":   bootstrapServers,
-		"sasl_mechanism":      saslMechanism,
-		"tls_enabled":         tlsEnabled,
-		"schema_registry_url": schemaRegistryURL,
-		"connection_timeout":  connectionTimeout.String(),
+		"bootstrap_servers":   config.bootstrapServers,
+		"sasl_mechanism":      config.saslMechanism,
+		"tls_enabled":         config.tlsEnabled,
+		"schema_registry_url": config.schemaRegistryURL,
+		"connection_timeout":  config.connectionTimeout.String(),
 	})
 
 	resp.DataSourceData = clients

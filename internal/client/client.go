@@ -31,17 +31,18 @@ type StreamlineClient struct {
 
 // Config holds configuration for creating a StreamlineClient via NewStreamlineClient.
 type Config struct {
-	Brokers       []string
-	Timeout       time.Duration
-	MaxRetries    int
-	TLSEnabled    bool
-	TLSCACertPath string
-	TLSCertPath   string
-	TLSKeyPath    string
-	TLSSkipVerify bool
-	SASLMechanism string
-	SASLUsername  string
-	SASLPassword  string
+	Brokers           []string
+	ConnectionTimeout time.Duration
+	Timeout           time.Duration
+	MaxRetries        int
+	TLSEnabled        bool
+	TLSCACertPath     string
+	TLSCertPath       string
+	TLSKeyPath        string
+	TLSSkipVerify     bool
+	SASLMechanism     string
+	SASLUsername      string
+	SASLPassword      string
 }
 
 // NewStreamlineClient creates a new StreamlineClient with the given configuration.
@@ -54,12 +55,16 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 		brokers:    cfg.Brokers,
 		timeout:    cfg.Timeout,
 		maxRetries: cfg.MaxRetries,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
 	}
 
 	if client.timeout == 0 {
 		client.timeout = 30 * time.Second
 	}
+	connectionTimeout := cfg.ConnectionTimeout
+	if connectionTimeout == 0 {
+		connectionTimeout = client.timeout
+	}
+	client.httpClient = &http.Client{Timeout: client.timeout}
 
 	if client.maxRetries <= 0 {
 		client.maxRetries = 3
@@ -85,7 +90,7 @@ func NewStreamlineClient(cfg Config) (*StreamlineClient, error) {
 
 	// Create dialer
 	client.dialer = &kafka.Dialer{
-		Timeout:       client.timeout,
+		Timeout:       connectionTimeout,
 		DualStack:     true,
 		SASLMechanism: client.sasl,
 		TLS:           client.tlsConfig,

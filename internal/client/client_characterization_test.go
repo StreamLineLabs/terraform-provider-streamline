@@ -39,6 +39,29 @@ func TestNewStreamlineClientRejectsUnsupportedSASL(t *testing.T) {
 	}
 }
 
+func TestNewStreamlineClientSeparatesConnectionAndRequestTimeouts(t *testing.T) {
+	t.Parallel()
+
+	got, err := NewStreamlineClient(Config{
+		Brokers:           []string{"localhost:9092"},
+		ConnectionTimeout: 5 * time.Second,
+		Timeout:           2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewStreamlineClient() error = %v", err)
+	}
+
+	if got.dialer.Timeout != 5*time.Second {
+		t.Fatalf("dialer timeout = %v, want 5s", got.dialer.Timeout)
+	}
+	if got.kafkaClient.Timeout != 2*time.Second {
+		t.Fatalf("request timeout = %v, want 2s", got.kafkaClient.Timeout)
+	}
+	if got.httpClient.Timeout != 2*time.Second {
+		t.Fatalf("HTTP timeout = %v, want 2s", got.httpClient.Timeout)
+	}
+}
+
 func TestACLConversions(t *testing.T) {
 	t.Parallel()
 
