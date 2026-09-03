@@ -7,7 +7,8 @@
 // - Topics (create, configure, delete)
 // - ACLs (access control lists)
 // - Schemas (schema registry management)
-// - Consumer Groups (offset management)
+// - Moonshot branches, contracts, and memory
+// - Consumer group inspection through a data source
 //
 // Usage:
 //

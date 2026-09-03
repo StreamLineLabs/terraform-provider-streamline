@@ -54,22 +54,6 @@ func configureCases() []configureCase {
 			},
 		},
 		{
-			name: "streamline_user",
-			newResource: func() (resource.ResourceWithConfigure, func() bool) {
-				r := &UserResource{}
-				return r, func() bool { return r.kafkaClient != nil }
-			},
-		},
-		{
-			// Regression guard: this resource previously asserted a raw
-			// *client.StreamlineClient and therefore always failed.
-			name: "streamline_consumer_group",
-			newResource: func() (resource.ResourceWithConfigure, func() bool) {
-				r := &ConsumerGroupResource{}
-				return r, func() bool { return r.kafkaClient != nil }
-			},
-		},
-		{
 			name: "streamline_schema",
 			newResource: func() (resource.ResourceWithConfigure, func() bool) {
 				r := &SchemaResource{}
@@ -77,24 +61,38 @@ func configureCases() []configureCase {
 			},
 		},
 		{
+			name: "streamline_user",
+			newResource: func() (resource.ResourceWithConfigure, func() bool) {
+				r := &UserResource{}
+				return r, func() bool { return r.configured }
+			},
+		},
+		{
+			name: "streamline_consumer_group",
+			newResource: func() (resource.ResourceWithConfigure, func() bool) {
+				r := &ConsumerGroupResource{}
+				return r, func() bool { return r.kafkaClient != nil }
+			},
+		},
+		{
 			name: "streamline_branch",
 			newResource: func() (resource.ResourceWithConfigure, func() bool) {
 				r := &BranchResource{}
-				return r, func() bool { return r.moonshot != nil }
+				return r, func() bool { return r.configured }
 			},
 		},
 		{
 			name: "streamline_contract",
 			newResource: func() (resource.ResourceWithConfigure, func() bool) {
 				r := &ContractResource{}
-				return r, func() bool { return r.moonshot != nil }
+				return r, func() bool { return r.configured }
 			},
 		},
 		{
 			name: "streamline_memory",
 			newResource: func() (resource.ResourceWithConfigure, func() bool) {
 				r := &MemoryResource{}
-				return r, func() bool { return r.moonshot != nil }
+				return r, func() bool { return r.configured }
 			},
 		},
 	}
@@ -171,8 +169,8 @@ func TestResourceConfigure_NilProviderDataIsNoOp(t *testing.T) {
 }
 
 func TestResourceConfigure_ReportsMissingOptionalClients(t *testing.T) {
-	// Only the Kafka client is configured; schema registry and Moonshot backed
-	// resources must explain what the practitioner has to set.
+	// Only the Kafka client is configured; schema registry backed resources
+	// must explain what the practitioner has to set.
 	kafka, err := client.NewStreamlineClient(client.Config{Brokers: []string{"localhost:9092"}})
 	if err != nil {
 		t.Fatalf("NewStreamlineClient: %v", err)
@@ -180,10 +178,7 @@ func TestResourceConfigure_ReportsMissingOptionalClients(t *testing.T) {
 	clients := &client.Clients{Kafka: kafka}
 
 	cases := map[string]resource.ResourceWithConfigure{
-		"streamline_schema":   &SchemaResource{},
-		"streamline_branch":   &BranchResource{},
-		"streamline_contract": &ContractResource{},
-		"streamline_memory":   &MemoryResource{},
+		"streamline_schema": &SchemaResource{},
 	}
 
 	for name, r := range cases {

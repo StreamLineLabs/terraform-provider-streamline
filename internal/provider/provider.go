@@ -211,6 +211,7 @@ func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Re
 func (p *StreamlineProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		datasources.NewClusterDataSource,
+		datasources.NewConsumerGroupDataSource,
 		datasources.NewTopicsDataSource,
 	}
 }
