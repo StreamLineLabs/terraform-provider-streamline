@@ -5,11 +5,15 @@ package provider
 
 import (
 	"context"
+	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
@@ -22,7 +26,8 @@ var _ provider.Provider = &StreamlineProvider{}
 
 // StreamlineProvider defines the provider implementation.
 type StreamlineProvider struct {
-	version string
+	version               string
+	schemaResourceFactory func() resource.Resource
 }
 
 // StreamlineProviderModel describes the provider data model.
@@ -52,6 +57,19 @@ func New(version string) func() provider.Provider {
 	}
 }
 
+// NewForSchemaAcceptanceTests creates a provider whose schema resource removes
+// only Terraform state during test teardown. It must be used exclusively with
+// a disposable Schema Registry fixture because production schema deletion
+// remains intentionally unsupported.
+func NewForSchemaAcceptanceTests(version string) func() provider.Provider {
+	return func() provider.Provider {
+		return &StreamlineProvider{
+			version:               version,
+			schemaResourceFactory: resources.NewSchemaResourceForAcceptanceTests,
+		}
+	}
+}
+
 // Metadata returns the provider type name.
 func (p *StreamlineProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "streamline"
@@ -77,7 +95,8 @@ Streamline is a Kafka-compatible streaming platform with support for:
 terraform {
   required_providers {
     streamline = {
-      source = "streamlinelabs/streamline"
+      source  = "streamlinelabs/streamline"
+      version = "~> 0.4.0"
     }
   }
 }
@@ -97,10 +116,16 @@ resource "streamline_topic" "events" {
 			"bootstrap_servers": schema.StringAttribute{
 				Description: "Comma-separated list of Streamline bootstrap servers (e.g., 'localhost:9092,localhost:9093')",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"sasl_mechanism": schema.StringAttribute{
 				Description: "SASL mechanism for authentication (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"),
+				},
 			},
 			"sasl_username": schema.StringAttribute{
 				Description: "SASL username for authentication",
@@ -134,21 +159,39 @@ resource "streamline_topic" "events" {
 			"connection_timeout": schema.Int64Attribute{
 				Description: "Connection timeout in seconds (default: 30)",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
 			},
 			"request_timeout": schema.Int64Attribute{
 				Description: "Request timeout in seconds (default: 60)",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
 			},
 			"schema_registry_url": schema.StringAttribute{
 				Description: "Schema Registry URL for schema management (e.g., 'http://localhost:8081')",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^https?://\S+$`),
+						"must be an absolute HTTP or HTTPS URL",
+					),
+				},
 			},
 			"moonshot_url": schema.StringAttribute{
-				Description: "Streamline Moonshot HTTP API base URL (e.g., 'http://localhost:9094'). Required to manage streamline_branch / streamline_contract resources.",
+				Description: "Reserved Streamline Moonshot HTTP API base URL. Legacy Moonshot resources are retained only for state compatibility and do not issue API requests.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^https?://\S+$`),
+						"must be an absolute HTTP or HTTPS URL",
+					),
+				},
 			},
 			"moonshot_token": schema.StringAttribute{
-				Description: "Bearer token for the Moonshot HTTP API.",
+				Description: "Sensitive authentication value reserved for the Moonshot HTTP API.",
 				Optional:    true,
 				Sensitive:   true,
 			},
@@ -168,6 +211,10 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 	}
 
 	config := resolveProviderConfig(model)
+	resp.Diagnostics.Append(validateResolvedProviderConfig(config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	brokers, diags := validateBootstrapServers(config.bootstrapServers)
 	resp.Diagnostics.Append(diags...)
@@ -195,10 +242,14 @@ func (p *StreamlineProvider) Configure(ctx context.Context, req provider.Configu
 
 // Resources defines the resources implemented in the provider.
 func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Resource {
+	schemaResourceFactory := p.schemaResourceFactory
+	if schemaResourceFactory == nil {
+		schemaResourceFactory = resources.NewSchemaResource
+	}
 	return []func() resource.Resource{
 		resources.NewTopicResource,
 		resources.NewAclResource,
-		resources.NewSchemaResource,
+		schemaResourceFactory,
 		resources.NewUserResource,
 		resources.NewConsumerGroupResource,
 		resources.NewBranchResource,

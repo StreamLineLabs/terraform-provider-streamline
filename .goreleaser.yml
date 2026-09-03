@@ -7,10 +7,11 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - go mod verify
 
 builds:
-  - env:
+  - binary: "{{ .ProjectName }}_v{{ .Version }}"
+    env:
       - CGO_ENABLED=0
     mod_timestamp: "{{ .CommitTimestamp }}"
     flags:
@@ -28,7 +29,6 @@ builds:
       - arm
       - "386"
     goarm:
-      - "6"
       - "7"
     ignore:
       - goos: windows
@@ -41,12 +41,19 @@ builds:
         goarch: arm64
 
 archives:
-  - format: zip
+  - formats:
+      - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
   algorithm: sha256
+  extra_files:
+    - glob: terraform-registry-manifest.json
+      name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
+
+sboms:
+  - artifacts: archive
 
 signs:
   - artifacts: checksum
@@ -62,6 +69,9 @@ signs:
 release:
   draft: false
   prerelease: auto
+  extra_files:
+    - glob: terraform-registry-manifest.json
+      name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
 
 changelog:
   sort: asc

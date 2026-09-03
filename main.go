@@ -24,7 +24,8 @@
 //	  bootstrap_servers = "localhost:9092"
 //	}
 
-//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name streamline
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 generate --provider-name streamline
+//go:generate go run ./internal/cmd/trimdocs
 
 package main
 

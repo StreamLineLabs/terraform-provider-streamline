@@ -21,16 +21,22 @@ go vet ./...                               # Vet
 │   ├── resources/
 │   │   ├── topic.go           # streamline_topic resource
 │   │   ├── acl.go             # streamline_acl resource
-│   │   ├── user.go            # streamline_user resource
-│   │   └── schema.go          # streamline_schema resource
+│   │   ├── schema.go          # streamline_schema resource
+│   │   ├── user.go            # deprecated legacy user schema
+│   │   ├── consumer_group.go  # deprecated legacy read/delete schema
+│   │   ├── branch.go          # deprecated legacy branch schema
+│   │   ├── contract.go        # deprecated legacy contract schema
+│   │   └── memory.go          # deprecated legacy memory schema
 │   ├── datasources/
-│   │   ├── clusters.go        # streamline_clusters data source
+│   │   ├── cluster.go         # streamline_cluster data source
+│   │   ├── consumer_group.go  # streamline_consumer_group data source
 │   │   └── topics.go          # streamline_topics data source
 │   └── client/
-│       └── client.go          # Kafka-compatible client (segmentio/kafka-go)
+│       ├── client.go          # Kafka-compatible client state
+│       ├── schema_registry.go # Schema Registry HTTP client
+│       └── moonshot.go        # reserved Moonshot client configuration
 ├── docs/                      # Generated provider documentation
-├── examples/                  # Example Terraform configurations
-└── tools/                     # Code generation tools
+└── examples/                  # Example Terraform configurations
 ```
 
 ## Coding Conventions
@@ -38,7 +44,8 @@ go vet ./...                               # Vet
 - **Context**: All CRUD operations accept `context.Context`
 - **Diagnostics**: Use `resp.Diagnostics.AddError()` for Terraform-style errors
 - **Validation**: Input validators via framework validators package
-- **State management**: Import support on topic, user, and schema resources
+- **State management**: Import support on topic, ACL, schema, and the deprecated
+  consumer-group resource
 
 ## Provider Configuration
 ```hcl
@@ -53,6 +60,14 @@ provider "streamline" {
 ## Resources
 - `streamline_topic` — Partitions, replication, retention, compression
 - `streamline_acl` — Resource type, principal, operation, permission
-- `streamline_user` — Username, SASL mechanism, credentials
 - `streamline_schema` — Subject, schema type (Avro/JSON/Protobuf), compatibility
+- `streamline_user` — Deprecated state compatibility; credential CRUD unsupported
+- `streamline_consumer_group` — Deprecated read/import/delete model
+- `streamline_branch` — Deprecated state compatibility; provisioning unsupported
+- `streamline_contract` — Deprecated state compatibility; no registry CRUD
+- `streamline_memory` — Deprecated state compatibility; no partition CRUD
 
+## Data Sources
+- `streamline_cluster` — Broker and controller metadata
+- `streamline_topics` — Topic names, partitions, and replication
+- `streamline_consumer_group` — Existing consumer-group state and members

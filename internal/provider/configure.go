@@ -6,6 +6,7 @@ package provider
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -101,6 +102,93 @@ func resolveProviderConfig(model StreamlineProviderModel) providerConfig {
 	}
 
 	return cfg
+}
+
+func validateResolvedProviderConfig(cfg providerConfig) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if cfg.connectionTimeout <= 0 {
+		diags.AddAttributeError(
+			path.Root("connection_timeout"),
+			"Invalid Connection Timeout",
+			"connection_timeout must be at least 1 second.",
+		)
+	}
+	if cfg.requestTimeout <= 0 {
+		diags.AddAttributeError(
+			path.Root("request_timeout"),
+			"Invalid Request Timeout",
+			"request_timeout must be at least 1 second.",
+		)
+	}
+
+	if cfg.saslMechanism == "" {
+		if cfg.saslUsername != "" || cfg.saslPassword != "" {
+			diags.AddAttributeError(
+				path.Root("sasl_mechanism"),
+				"Missing SASL Mechanism",
+				"Set sasl_mechanism when SASL credentials are configured.",
+			)
+		}
+	} else {
+		switch cfg.saslMechanism {
+		case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
+		default:
+			diags.AddAttributeError(
+				path.Root("sasl_mechanism"),
+				"Unsupported SASL Mechanism",
+				"sasl_mechanism must be PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512.",
+			)
+		}
+		if cfg.saslUsername == "" {
+			diags.AddAttributeError(
+				path.Root("sasl_username"),
+				"Missing SASL Username",
+				"Set sasl_username when sasl_mechanism is configured.",
+			)
+		}
+		if cfg.saslPassword == "" {
+			diags.AddAttributeError(
+				path.Root("sasl_password"),
+				"Missing SASL Password",
+				"Set sasl_password when sasl_mechanism is configured.",
+			)
+		}
+	}
+
+	if (cfg.tlsClientCert == "") != (cfg.tlsClientKey == "") {
+		diags.AddAttributeError(
+			path.Root("tls_client_cert"),
+			"Incomplete TLS Client Certificate",
+			"tls_client_cert and tls_client_key must be configured together.",
+		)
+	}
+
+	validateURL := func(attribute, value string) {
+		if value == "" {
+			return
+		}
+		parsed, err := url.ParseRequestURI(value)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			diags.AddAttributeError(
+				path.Root(attribute),
+				"Invalid HTTP URL",
+				fmt.Sprintf("%s must be an absolute HTTP or HTTPS URL.", attribute),
+			)
+		}
+	}
+	validateURL("schema_registry_url", cfg.schemaRegistryURL)
+	validateURL("moonshot_url", cfg.moonshotURL)
+
+	if cfg.moonshotToken != "" && cfg.moonshotURL == "" {
+		diags.AddAttributeError(
+			path.Root("moonshot_url"),
+			"Missing Moonshot URL",
+			"Set moonshot_url when moonshot_token is configured.",
+		)
+	}
+
+	return diags
 }
 
 // validateBootstrapServers checks that bootstrap servers were supplied and that

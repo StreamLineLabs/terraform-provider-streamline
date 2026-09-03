@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	fwprovider "github.com/hashicorp/terraform-plugin-framework/provider"
+	providerschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -189,6 +190,29 @@ func TestProviderConfigure_RequiresBootstrapServers(t *testing.T) {
 	}
 	if resp.ResourceData != nil || resp.DataSourceData != nil {
 		t.Fatal("no clients should be published when configuration is invalid")
+	}
+}
+
+func TestProviderSchemaHasPlanTimeValidators(t *testing.T) {
+	t.Parallel()
+
+	resp := &fwprovider.SchemaResponse{}
+	New("test")().Schema(context.Background(), fwprovider.SchemaRequest{}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected schema diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	for _, name := range []string{"bootstrap_servers", "sasl_mechanism", "schema_registry_url", "moonshot_url"} {
+		attr, ok := resp.Schema.Attributes[name].(providerschema.StringAttribute)
+		if !ok || len(attr.Validators) == 0 {
+			t.Fatalf("%s must have a plan-time string validator", name)
+		}
+	}
+	for _, name := range []string{"connection_timeout", "request_timeout"} {
+		attr, ok := resp.Schema.Attributes[name].(providerschema.Int64Attribute)
+		if !ok || len(attr.Validators) == 0 {
+			t.Fatalf("%s must have a plan-time integer validator", name)
+		}
 	}
 }
 
@@ -509,6 +533,69 @@ func TestNewProviderClients(t *testing.T) {
 			}
 			if got := clients.Moonshot != nil; got != test.wantMoonshot {
 				t.Errorf("Moonshot initialized = %t, want %t", got, test.wantMoonshot)
+			}
+		})
+	}
+}
+
+func TestValidateResolvedProviderConfig(t *testing.T) {
+	t.Parallel()
+
+	valid := providerConfig{
+		bootstrapServers:  "localhost:9092",
+		connectionTimeout: time.Second,
+		requestTimeout:    time.Second,
+	}
+	if diags := validateResolvedProviderConfig(valid); diags.HasError() {
+		t.Fatalf("valid configuration returned diagnostics: %v", diags.Errors())
+	}
+
+	tests := map[string]providerConfig{
+		"non-positive timeouts": {
+			connectionTimeout: 0,
+			requestTimeout:    -time.Second,
+		},
+		"credentials without mechanism": {
+			saslUsername:      "user",
+			saslPassword:      "password",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+		"mechanism without credentials": {
+			saslMechanism:     "SCRAM-SHA-256",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+		"unsupported mechanism": {
+			saslMechanism:     "NOPE",
+			saslUsername:      "user",
+			saslPassword:      "password",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+		"incomplete client certificate": {
+			tlsClientCert:     "client.pem",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+		"invalid service URLs": {
+			schemaRegistryURL: "registry.example.com",
+			moonshotURL:       "ftp://moonshot.example.com",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+		"token without URL": {
+			moonshotToken:     "token",
+			connectionTimeout: time.Second,
+			requestTimeout:    time.Second,
+		},
+	}
+
+	for name, config := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if diags := validateResolvedProviderConfig(config); !diags.HasError() {
+				t.Fatal("expected validation diagnostics")
 			}
 		})
 	}
