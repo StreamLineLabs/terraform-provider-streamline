@@ -20,7 +20,6 @@ func TestAccClusterDataSource_basic(t *testing.T) {
 			{
 				Config: testAccClusterDataSourceConfig(),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttrSet("data.streamline_cluster.test", "cluster_id"),
 					resource.TestCheckResourceAttrSet("data.streamline_cluster.test", "controller_id"),
 				),
 			},

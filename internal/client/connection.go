@@ -11,6 +11,8 @@ import (
 	"math"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -18,6 +20,133 @@ import (
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
 )
+
+func (c *StreamlineClient) bootstrapAddr() net.Addr {
+	return kafka.TCP(c.brokers...)
+}
+
+func (c *StreamlineClient) readClusterMetadata(
+	ctx context.Context,
+	topics []string,
+) (*kafka.MetadataResponse, error) {
+	resp, err := c.kafkaClient.Metadata(ctx, &kafka.MetadataRequest{
+		Addr:   c.bootstrapAddr(),
+		Topics: topics,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMetadataResponse(resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func validateMetadataResponse(resp *kafka.MetadataResponse) error {
+	if resp == nil {
+		return fmt.Errorf("broker returned an empty metadata response")
+	}
+	if len(resp.Brokers) == 0 {
+		return fmt.Errorf("metadata response advertised no brokers")
+	}
+	for i := range resp.Brokers {
+		if _, err := kafkaBrokerAddr(&resp.Brokers[i]); err != nil {
+			return fmt.Errorf("metadata response contained invalid broker %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func kafkaBrokerAddr(broker *kafka.Broker) (net.Addr, error) {
+	host := strings.TrimSpace(broker.Host)
+	if host == "" {
+		return nil, fmt.Errorf("broker %d advertised an empty host", broker.ID)
+	}
+	if broker.Port <= 0 || broker.Port > 65535 {
+		return nil, fmt.Errorf("broker %d advertised invalid port %d", broker.ID, broker.Port)
+	}
+	return kafka.TCP(net.JoinHostPort(host, strconv.Itoa(broker.Port))), nil
+}
+
+func (c *StreamlineClient) resolveControllerAddr(ctx context.Context) (net.Addr, error) {
+	metadata, err := c.readClusterMetadata(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve controller metadata: %w", err)
+	}
+
+	controllerAddr, err := kafkaBrokerAddr(&metadata.Controller)
+	if err != nil {
+		return nil, fmt.Errorf("metadata response did not identify a valid controller: %w", err)
+	}
+	for i := range metadata.Brokers {
+		broker := &metadata.Brokers[i]
+		if broker.ID == metadata.Controller.ID &&
+			broker.Host == metadata.Controller.Host &&
+			broker.Port == metadata.Controller.Port {
+			return controllerAddr, nil
+		}
+	}
+	return nil, fmt.Errorf(
+		"metadata response controller %d at %s was not present in the advertised broker list",
+		metadata.Controller.ID,
+		controllerAddr.String(),
+	)
+}
+
+func (c *StreamlineClient) resolveGroupCoordinatorAddr(
+	ctx context.Context,
+	groupID string,
+) (net.Addr, error) {
+	resp, err := c.kafkaClient.FindCoordinator(ctx, &kafka.FindCoordinatorRequest{
+		Addr:    c.bootstrapAddr(),
+		Key:     groupID,
+		KeyType: kafka.CoordinatorKeyTypeConsumer,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve coordinator for consumer group %q: %w", groupID, err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf(
+			"failed to resolve coordinator for consumer group %q: broker returned an empty response",
+			groupID,
+		)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf(
+			"failed to resolve coordinator for consumer group %q: %w",
+			groupID,
+			resp.Error,
+		)
+	}
+	if resp.Coordinator == nil {
+		return nil, fmt.Errorf(
+			"failed to resolve coordinator for consumer group %q: broker omitted the coordinator",
+			groupID,
+		)
+	}
+	return kafkaBrokerAddr(&kafka.Broker{
+		ID:   resp.Coordinator.NodeID,
+		Host: resp.Coordinator.Host,
+		Port: resp.Coordinator.Port,
+	})
+}
+
+func (c *StreamlineClient) advertisedBrokerAddrs(ctx context.Context) ([]net.Addr, error) {
+	metadata, err := c.readClusterMetadata(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve advertised brokers: %w", err)
+	}
+
+	addresses := make([]net.Addr, 0, len(metadata.Brokers))
+	for i := range metadata.Brokers {
+		addr, err := kafkaBrokerAddr(&metadata.Brokers[i])
+		if err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, addr)
+	}
+	return addresses, nil
+}
 
 func createSASLMechanism(mechanism, username, password string) (sasl.Mechanism, error) {
 	switch mechanism {
@@ -85,6 +214,9 @@ func (c *StreamlineClient) withRetry(ctx context.Context, operation string, fn f
 		lastErr = fn(ctx)
 		if lastErr == nil {
 			return nil
+		}
+		if IsNotFound(lastErr) {
+			return lastErr
 		}
 
 		if attempt < c.maxRetries-1 {

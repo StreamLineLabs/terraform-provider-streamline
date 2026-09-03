@@ -29,6 +29,13 @@ func dataSourceConfigureCases() []dataSourceConfigureCase {
 			},
 		},
 		{
+			name: "streamline_consumer_group",
+			newDataSource: func() (datasource.DataSourceWithConfigure, func() bool) {
+				d := &ConsumerGroupDataSource{}
+				return d, func() bool { return d.kafkaClient != nil }
+			},
+		},
+		{
 			name: "streamline_topics",
 			newDataSource: func() (datasource.DataSourceWithConfigure, func() bool) {
 				d := &TopicsDataSource{}

@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
@@ -38,6 +39,33 @@ type TopicInfo struct {
 	Partitions        types.Int64  `tfsdk:"partitions"`
 	ReplicationFactor types.Int64  `tfsdk:"replication_factor"`
 	Internal          types.Bool   `tfsdk:"internal"`
+}
+
+type regexpStringValidator struct{}
+
+func (regexpStringValidator) Description(context.Context) string {
+	return "value must be a valid regular expression"
+}
+
+func (regexpStringValidator) MarkdownDescription(context.Context) string {
+	return "value must be a valid regular expression"
+}
+
+func (regexpStringValidator) ValidateString(
+	_ context.Context,
+	req validator.StringRequest,
+	resp *validator.StringResponse,
+) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, err := regexp.Compile(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid Regular Expression",
+			fmt.Sprintf("The value is not a valid regular expression: %s", err),
+		)
+	}
 }
 
 // NewTopicsDataSource creates a new topics data source
@@ -81,12 +109,16 @@ output "total_partitions" {
 `,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Computed:    true,
-				Description: "The data source identifier.",
+				Computed:            true,
+				DeprecationMessage:  "This collection data source has no stable remote identity; this compatibility field is always null.",
+				MarkdownDescription: "Deprecated compatibility field. Always null because a filtered topic collection has no stable remote identity.",
 			},
 			"name_pattern": schema.StringAttribute{
 				Optional:    true,
 				Description: "Optional regex pattern to filter topics by name.",
+				Validators: []validator.String{
+					regexpStringValidator{},
+				},
 			},
 			"topics": schema.ListNestedAttribute{
 				Computed:    true,
@@ -106,8 +138,9 @@ output "total_partitions" {
 							Description: "The replication factor.",
 						},
 						"internal": schema.BoolAttribute{
-							Computed:    true,
-							Description: "Whether this is an internal topic.",
+							Computed:            true,
+							DeprecationMessage:  "The Kafka metadata API used by this provider does not expose this flag; this compatibility field is always null.",
+							MarkdownDescription: "Deprecated compatibility field. Always null because the Kafka metadata API used by this provider does not expose this flag.",
 						},
 					},
 				},
@@ -191,7 +224,7 @@ func (d *TopicsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 			"name":               types.StringValue(topic.Name),
 			"partitions":         types.Int64Value(int64(topic.Partitions)),
 			"replication_factor": types.Int64Value(int64(topic.ReplicationFactor)),
-			"internal":           types.BoolValue(topic.Internal),
+			"internal":           types.BoolNull(),
 		})
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -206,7 +239,7 @@ func (d *TopicsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 
-	state.ID = types.StringValue("topics")
+	state.ID = types.StringNull()
 	state.NamePattern = config.NamePattern
 	state.Topics = topicsList
 
@@ -216,5 +249,3 @@ func (d *TopicsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
-
-// correct import ID format for cluster resource

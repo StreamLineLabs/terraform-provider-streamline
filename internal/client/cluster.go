@@ -12,7 +12,6 @@ import (
 
 // ClusterMetadata represents cluster metadata
 type ClusterMetadata struct {
-	ClusterID    string
 	ControllerID int
 	Brokers      []BrokerInfo
 }
@@ -49,25 +48,16 @@ func (c *StreamlineClient) GetClusterMetadata(ctx context.Context) (*ClusterMeta
 	}
 
 	return &ClusterMetadata{
-		ClusterID:    "streamline-cluster", // kafka-go doesn't expose cluster ID directly
 		ControllerID: controller.ID,
 		Brokers:      brokerInfos,
 	}, nil
 }
 
-// defaultKafkaPort is assumed when a broker advertises an address without a
-// usable port component.
-const defaultKafkaPort = 9092
-
 func brokerInfo(broker *kafka.Broker) BrokerInfo {
-	port := broker.Port
-	if port == 0 {
-		port = defaultKafkaPort
-	}
 	return BrokerInfo{
 		ID:   broker.ID,
 		Host: broker.Host,
-		Port: port,
+		Port: broker.Port,
 		Rack: broker.Rack,
 	}
 }

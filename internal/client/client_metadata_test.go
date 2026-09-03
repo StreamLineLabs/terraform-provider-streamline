@@ -21,11 +21,11 @@ func TestBrokerInfoUsesAdvertisedMetadata(t *testing.T) {
 	}
 }
 
-func TestBrokerInfoFallsBackForMissingPort(t *testing.T) {
+func TestBrokerInfoDoesNotInventMissingPort(t *testing.T) {
 	t.Parallel()
 
 	got := brokerInfo(&kafka.Broker{Host: "broker.internal"})
-	if got.Port != defaultKafkaPort {
-		t.Fatalf("expected port %d, got %d", defaultKafkaPort, got.Port)
+	if got.Port != 0 {
+		t.Fatalf("expected unavailable port to remain zero, got %d", got.Port)
 	}
 }

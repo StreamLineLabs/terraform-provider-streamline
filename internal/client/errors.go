@@ -1,6 +1,50 @@
 package client
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// NotFoundError identifies a confirmed missing remote object. Callers must use
+// IsNotFound rather than matching error strings before removing Terraform
+// state.
+type NotFoundError struct {
+	Resource   string
+	Identifier string
+	Cause      error
+}
+
+func (e *NotFoundError) Error() string {
+	message := fmt.Sprintf("%s not found", e.Resource)
+	if e.Identifier != "" {
+		message += ": " + e.Identifier
+	}
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
+}
+
+// Unwrap preserves an underlying protocol or transport error when present.
+func (e *NotFoundError) Unwrap() error {
+	return e.Cause
+}
+
+// NewNotFoundError creates a typed error for a confirmed missing object.
+func NewNotFoundError(resource, identifier string, cause error) *NotFoundError {
+	return &NotFoundError{
+		Resource:   resource,
+		Identifier: identifier,
+		Cause:      cause,
+	}
+}
+
+// IsNotFound reports whether err, including any wrapped error, is a confirmed
+// missing-object result.
+func IsNotFound(err error) bool {
+	var target *NotFoundError
+	return errors.As(err, &target)
+}
 
 // APIError represents an error returned by the Streamline API.
 type APIError struct {
