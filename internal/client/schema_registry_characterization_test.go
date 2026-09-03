@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,9 @@ func TestSchemaRegistryClient_GetSchema_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+	if !IsNotFound(err) {
+		t.Fatalf("expected typed not-found, got %T: %v", err, err)
+	}
 	const want = "schema not found: orders-value version latest"
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
@@ -182,6 +186,44 @@ func TestSchemaRegistryClient_GetSchemaByID(t *testing.T) {
 	}
 	if schema != `{"type":"record"}` {
 		t.Errorf("schema = %q", schema)
+	}
+}
+
+func TestSchemaRegistryClient_GetSchemaVersionForID(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	c := newSchemaRegistryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode([]SubjectVersionPair{
+			{Subject: "other-value", Version: 9},
+			{Subject: "orders-value", Version: 2},
+			{Subject: "orders-value", Version: 4},
+		})
+	})
+
+	version, err := c.GetSchemaVersionForID(context.Background(), "orders-value", 42)
+	if err != nil {
+		t.Fatalf("GetSchemaVersionForID() error = %v", err)
+	}
+	if gotPath != "/schemas/ids/42/versions" {
+		t.Fatalf("path = %q, want /schemas/ids/42/versions", gotPath)
+	}
+	if version != 4 {
+		t.Fatalf("version = %d, want highest matching version 4", version)
+	}
+}
+
+func TestSchemaRegistryClient_GetSchemaVersionForIDSubjectMissing(t *testing.T) {
+	t.Parallel()
+
+	c := newSchemaRegistryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]SubjectVersionPair{{Subject: "other-value", Version: 1}})
+	})
+
+	_, err := c.GetSchemaVersionForID(context.Background(), "orders-value", 42)
+	if !IsNotFound(err) {
+		t.Fatalf("expected typed not-found, got %T: %v", err, err)
 	}
 }
 
@@ -269,19 +311,27 @@ func TestSchemaRegistryClient_GetCompatibility(t *testing.T) {
 	}
 }
 
-func TestSchemaRegistryClient_GetCompatibility_NotFoundDefaultsToBackward(t *testing.T) {
+func TestSchemaRegistryClient_GetCompatibility_SubjectNotFoundUsesGlobalConfig(t *testing.T) {
 	t.Parallel()
 
 	c := newSchemaRegistryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		switch r.URL.Path {
+		case "/config/orders-value":
+			w.WriteHeader(http.StatusNotFound)
+		case "/config":
+			_ = json.NewEncoder(w).Encode(configResponse{CompatibilityLevel: "FULL"})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	})
 
 	got, err := c.GetCompatibility(context.Background(), "orders-value")
 	if err != nil {
 		t.Fatalf("GetCompatibility() error = %v", err)
 	}
-	if got != "BACKWARD" {
-		t.Errorf("compatibility = %q, want BACKWARD", got)
+	if got != "FULL" {
+		t.Errorf("compatibility = %q, want FULL", got)
 	}
 }
 
@@ -348,6 +398,107 @@ func TestSchemaRegistryClient_CheckCompatibility_NotFoundMeansCompatible(t *test
 	}
 	if !got {
 		t.Error("compatible = false, want true for 404 (no existing schema)")
+	}
+}
+
+func TestSchemaRegistryClientEscapesSubjectPathSegments(t *testing.T) {
+	t.Parallel()
+
+	subject := "orders/value?region=west#section %"
+	escaped := url.PathEscape(subject)
+
+	tests := []struct {
+		name         string
+		expectedPath string
+		responseBody string
+		call         func(*SchemaRegistryClient) error
+	}{
+		{
+			name:         "register schema",
+			expectedPath: "/subjects/" + escaped + "/versions",
+			responseBody: `{"id":42}`,
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.RegisterSchema(context.Background(), SchemaConfig{
+					Subject: subject,
+					Schema:  `{"type":"record"}`,
+				})
+				return err
+			},
+		},
+		{
+			name:         "get schema",
+			expectedPath: "/subjects/" + escaped + "/versions/3",
+			responseBody: `{"subject":"ignored","version":3,"id":42,"schema":"{}"}`,
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.GetSchema(context.Background(), subject, 3)
+				return err
+			},
+		},
+		{
+			name:         "delete schema",
+			expectedPath: "/subjects/" + escaped,
+			responseBody: `[]`,
+			call: func(c *SchemaRegistryClient) error {
+				return c.DeleteSchema(context.Background(), subject, false)
+			},
+		},
+		{
+			name:         "set compatibility",
+			expectedPath: "/config/" + escaped,
+			responseBody: `{}`,
+			call: func(c *SchemaRegistryClient) error {
+				return c.SetCompatibility(context.Background(), subject, "BACKWARD")
+			},
+		},
+		{
+			name:         "get compatibility",
+			expectedPath: "/config/" + escaped,
+			responseBody: `{"compatibilityLevel":"BACKWARD"}`,
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.GetCompatibility(context.Background(), subject)
+				return err
+			},
+		},
+		{
+			name:         "check compatibility",
+			expectedPath: "/compatibility/subjects/" + escaped + "/versions/latest",
+			responseBody: `{"is_compatible":true}`,
+			call: func(c *SchemaRegistryClient) error {
+				_, err := c.CheckCompatibility(context.Background(), subject, "{}", "AVRO")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotPath string
+			c := newSchemaRegistryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.EscapedPath()
+				_, _ = w.Write([]byte(tt.responseBody))
+			})
+
+			if err := tt.call(c); err != nil {
+				t.Fatalf("%s failed: %v", tt.name, err)
+			}
+			if gotPath != tt.expectedPath {
+				t.Fatalf("escaped path = %q, want %q", gotPath, tt.expectedPath)
+			}
+		})
+	}
+}
+
+func TestSchemaSubjectPathSegmentEscapesTraversalSegments(t *testing.T) {
+	t.Parallel()
+
+	if got := schemaSubjectPathSegment("."); got != "%2E" {
+		t.Fatalf("single-dot subject = %q, want %%2E", got)
+	}
+	if got := schemaSubjectPathSegment(".."); got != "%2E%2E" {
+		t.Fatalf("double-dot subject = %q, want %%2E%%2E", got)
 	}
 }
 
@@ -464,9 +615,8 @@ func newSchemaRegistryClientWithTransport(rt http.RoundTripper) *SchemaRegistryC
 }
 
 // TestSchemaRegistryClient_NotFoundFastPath_SurvivesUnreadableBody verifies
-// that GetSchema, GetCompatibility, and CheckCompatibility take their 404
-// fast path from the status code alone, even when the response body cannot
-// be read at all.
+// that endpoint-specific 404 handling is based on the status code alone, even
+// when the response body cannot be read.
 func TestSchemaRegistryClient_NotFoundFastPath_SurvivesUnreadableBody(t *testing.T) {
 	t.Parallel()
 
@@ -490,12 +640,9 @@ func TestSchemaRegistryClient_NotFoundFastPath_SurvivesUnreadableBody(t *testing
 		t.Parallel()
 		c := newSchemaRegistryClientWithTransport(rt)
 
-		got, err := c.GetCompatibility(context.Background(), "orders-value")
-		if err != nil {
-			t.Fatalf("GetCompatibility() error = %v", err)
-		}
-		if got != "BACKWARD" {
-			t.Errorf("compatibility = %q, want BACKWARD", got)
+		_, err := c.GetCompatibility(context.Background(), "orders-value")
+		if err == nil {
+			t.Fatal("expected global compatibility lookup error")
 		}
 	})
 

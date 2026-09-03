@@ -87,12 +87,9 @@ provider "streamline" {
 }
 
 resource "streamline_topic" "events" {
-  name       = "events"
-  partitions = 3
-
-  config = {
-    "retention.ms" = "604800000"  # 7 days
-  }
+  name         = "events"
+  partitions   = 3
+  retention_ms = 604800000 # 7 days
 }
 ` + "```" + `
 `,

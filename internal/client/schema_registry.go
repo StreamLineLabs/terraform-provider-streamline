@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"time"
 )
 
@@ -72,6 +73,12 @@ type SchemaInfo struct {
 	References []SchemaReference `json:"references,omitempty"`
 }
 
+// SubjectVersionPair identifies one subject/version that uses a schema ID.
+type SubjectVersionPair struct {
+	Subject string `json:"subject"`
+	Version int    `json:"version"`
+}
+
 // RegisterSchemaRequest represents the request to register a schema
 type registerSchemaRequest struct {
 	Schema     string            `json:"schema"`
@@ -96,7 +103,7 @@ type configResponse struct {
 
 // RegisterSchema registers a new schema version
 func (c *SchemaRegistryClient) RegisterSchema(ctx context.Context, cfg SchemaConfig) (int, error) {
-	url := fmt.Sprintf("%s/subjects/%s/versions", c.baseURL, cfg.Subject)
+	url := fmt.Sprintf("%s/subjects/%s/versions", c.baseURL, schemaSubjectPathSegment(cfg.Subject))
 
 	reqBody := registerSchemaRequest{
 		Schema:     cfg.Schema,
@@ -131,7 +138,7 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 		versionStr = fmt.Sprintf("%d", version)
 	}
 
-	url := fmt.Sprintf("%s/subjects/%s/versions/%s", c.baseURL, subject, versionStr)
+	url := fmt.Sprintf("%s/subjects/%s/versions/%s", c.baseURL, schemaSubjectPathSegment(subject), versionStr)
 
 	resp, err := c.send(ctx, http.MethodGet, url, "get schema", nil)
 	if resp == nil {
@@ -139,7 +146,7 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("schema not found: %s version %s", subject, versionStr)
+		return nil, NewNotFoundError("schema", fmt.Sprintf("%s version %s", subject, versionStr), nil)
 	}
 
 	if err != nil {
@@ -166,6 +173,9 @@ func (c *SchemaRegistryClient) GetSchemaByID(ctx context.Context, id int) (strin
 	if resp == nil {
 		return "", err
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", NewNotFoundError("schema", fmt.Sprintf("id %d", id), nil)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -184,9 +194,49 @@ func (c *SchemaRegistryClient) GetSchemaByID(ctx context.Context, id int) (strin
 	return result.Schema, nil
 }
 
+// GetSchemaVersionForID returns the highest version of subject associated
+// with the exact schema ID returned by registration.
+func (c *SchemaRegistryClient) GetSchemaVersionForID(ctx context.Context, subject string, id int) (int, error) {
+	url := fmt.Sprintf("%s/schemas/ids/%d/versions", c.baseURL, id)
+
+	resp, err := c.send(ctx, http.MethodGet, url, "get schema versions", nil)
+	if resp == nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, NewNotFoundError("schema", fmt.Sprintf("id %d", id), nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, responseError("get schema versions", resp.StatusCode, resp.Body)
+	}
+
+	var pairs []SubjectVersionPair
+	if err := json.Unmarshal(resp.Body, &pairs); err != nil {
+		return 0, fmt.Errorf("failed to decode schema versions response: %w", err)
+	}
+
+	version := 0
+	for _, pair := range pairs {
+		if pair.Subject == subject && pair.Version > version {
+			version = pair.Version
+		}
+	}
+	if version == 0 {
+		return 0, NewNotFoundError(
+			"schema subject/version",
+			fmt.Sprintf("%s for id %d", subject, id),
+			nil,
+		)
+	}
+	return version, nil
+}
+
 // DeleteSchema deletes a schema subject (soft delete)
 func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string, permanent bool) error {
-	url := fmt.Sprintf("%s/subjects/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/subjects/%s", c.baseURL, schemaSubjectPathSegment(subject))
 	if permanent {
 		url += "?permanent=true"
 	}
@@ -194,6 +244,9 @@ func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string,
 	resp, err := c.send(ctx, http.MethodDelete, url, "delete schema", nil)
 	if resp == nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return NewNotFoundError("schema subject", subject, nil)
 	}
 	if err != nil {
 		return err
@@ -208,7 +261,7 @@ func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string,
 
 // SetCompatibility sets the compatibility level for a subject
 func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, level string) error {
-	url := fmt.Sprintf("%s/config/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/config/%s", c.baseURL, schemaSubjectPathSegment(subject))
 
 	reqBody := map[string]string{
 		"compatibility": level,
@@ -231,7 +284,7 @@ func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, le
 
 // GetCompatibility gets the compatibility level for a subject
 func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject string) (string, error) {
-	url := fmt.Sprintf("%s/config/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/config/%s", c.baseURL, schemaSubjectPathSegment(subject))
 
 	resp, err := c.send(ctx, http.MethodGet, url, "get compatibility", nil)
 	if resp == nil {
@@ -239,8 +292,22 @@ func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject str
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Return global default
-		return "BACKWARD", nil
+		globalURL := fmt.Sprintf("%s/config", c.baseURL)
+		globalResp, globalErr := c.send(ctx, http.MethodGet, globalURL, "get global compatibility", nil)
+		if globalResp == nil {
+			return "", globalErr
+		}
+		if globalErr != nil {
+			return "", globalErr
+		}
+		if globalResp.StatusCode != http.StatusOK {
+			return "", responseError("get global compatibility", globalResp.StatusCode, globalResp.Body)
+		}
+		var globalResult configResponse
+		if decodeErr := json.Unmarshal(globalResp.Body, &globalResult); decodeErr != nil {
+			return "", fmt.Errorf("failed to decode global compatibility response: %w", decodeErr)
+		}
+		return globalResult.CompatibilityLevel, nil
 	}
 
 	if err != nil {
@@ -285,7 +352,11 @@ func (c *SchemaRegistryClient) ListSubjects(ctx context.Context) ([]string, erro
 
 // CheckCompatibility checks if a schema is compatible
 func (c *SchemaRegistryClient) CheckCompatibility(ctx context.Context, subject, schema, schemaType string) (bool, error) {
-	url := fmt.Sprintf("%s/compatibility/subjects/%s/versions/latest", c.baseURL, subject)
+	url := fmt.Sprintf(
+		"%s/compatibility/subjects/%s/versions/latest",
+		c.baseURL,
+		schemaSubjectPathSegment(subject),
+	)
 
 	reqBody := registerSchemaRequest{
 		Schema:     schema,
@@ -316,6 +387,17 @@ func (c *SchemaRegistryClient) CheckCompatibility(ctx context.Context, subject, 
 	}
 
 	return result.IsCompatible, nil
+}
+
+func schemaSubjectPathSegment(subject string) string {
+	switch subject {
+	case ".":
+		return "%2E"
+	case "..":
+		return "%2E%2E"
+	default:
+		return neturl.PathEscape(subject)
+	}
 }
 
 func (c *SchemaRegistryClient) setAuth(req *http.Request) {
