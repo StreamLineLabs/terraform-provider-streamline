@@ -40,7 +40,7 @@ import (
 
 var (
 	// Version is set during build via -ldflags; defaults to release version
-	version string = "0.3.0"
+	version string = "0.4.0"
 )
 
 func main() {
