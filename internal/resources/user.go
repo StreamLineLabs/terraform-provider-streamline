@@ -5,11 +5,8 @@ package resources
 
 import (
 	"context"
-	"fmt"
-	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -17,80 +14,53 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
-
-	"github.com/streamlinelabs/terraform-provider-streamline/internal/client"
 )
 
-// Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &UserResource{}
 var _ resource.ResourceWithImportState = &UserResource{}
 
-// UserResource defines the user resource implementation.
+// UserResource preserves the legacy resource schema for state compatibility.
+// Streamline does not expose an API that can manage SASL credentials.
 type UserResource struct {
-	kafkaClient *client.StreamlineClient
+	configured bool
 }
 
-// UserResourceModel describes the user resource data model.
 type UserResourceModel struct {
 	ID        types.String `tfsdk:"id"`
 	Username  types.String `tfsdk:"username"`
 	Mechanism types.String `tfsdk:"mechanism"`
 }
 
-// NewUserResource creates a new user resource
 func NewUserResource() resource.Resource {
 	return &UserResource{}
 }
 
-// Metadata returns the resource type name.
-func (r *UserResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+func (r *UserResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_user"
 }
 
-// Schema defines the schema for the resource.
-func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *UserResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a Streamline SASL/SCRAM user.",
-		MarkdownDescription: `
-Manages a Streamline SASL/SCRAM user.
-
-Users are authenticated principals that can be granted access to Streamline resources via ACLs. This resource manages user credentials using the SASL/SCRAM mechanism.
-
-## Example Usage
-
-` + "```hcl" + `
-resource "streamline_user" "alice" {
-  username  = "alice"
-  mechanism = "SCRAM-SHA-256"
-}
-
-resource "streamline_user" "producer_service" {
-  username  = "producer-service"
-  mechanism = "SCRAM-SHA-256"
-}
-
-# Grant the user access to a topic
-resource "streamline_acl" "alice_read" {
-  resource_type   = "topic"
-  resource_name   = "events"
-  principal       = "User:${streamline_user.alice.username}"
-  operation       = "read"
-  permission_type = "allow"
-}
-` + "```" + `
-`,
+		Description: "Legacy Streamline SASL/SCRAM user state. Credential management is unsupported.",
+		MarkdownDescription: "Preserves legacy `streamline_user` state so provider upgrades do not make existing state unreadable. " +
+			"Streamline does not expose an API for creating, reading, rotating, or deleting SASL credentials. " +
+			"Manage credentials outside Terraform and use `streamline_acl` for authorization. " +
+			"Remove legacy entries with `terraform state rm` after confirming external credential ownership.",
+		DeprecationMessage: "streamline_user cannot manage credentials and is retained only for legacy state compatibility.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
-				Description: "The ID of the user (same as username).",
+				Description: "Legacy state identifier (same as username).",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"username": schema.StringAttribute{
 				Required:    true,
-				Description: "The username for the SASL/SCRAM user.",
+				Description: "Legacy SASL/SCRAM username.",
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -99,7 +69,7 @@ resource "streamline_acl" "alice_read" {
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("SCRAM-SHA-256"),
-				Description: "The SASL mechanism: 'SCRAM-SHA-256' (default) or 'SCRAM-SHA-512'.",
+				Description: "Legacy SASL mechanism.",
 				Validators: []validator.String{
 					stringvalidator.OneOf("SCRAM-SHA-256", "SCRAM-SHA-512"),
 				},
@@ -111,135 +81,51 @@ resource "streamline_acl" "alice_read" {
 	}
 }
 
-// Configure adds the provider configured client to the resource.
-func (r *UserResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-
-	clients, ok := req.ProviderData.(*ProviderClients)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
-		)
-		return
-	}
-
-	r.kafkaClient = clients.Kafka
+func (r *UserResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	r.configured = configureLegacyResource(req, resp)
 }
 
-// Create creates the resource and sets the initial Terraform state.
-func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan UserResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	tflog.Debug(ctx, "Creating user", map[string]any{
-		"username":  plan.Username.ValueString(),
-		"mechanism": plan.Mechanism.ValueString(),
-	})
-
-	userConfig := client.UserConfig{
-		Username:  plan.Username.ValueString(),
-		Mechanism: plan.Mechanism.ValueString(),
-	}
-
-	err := r.kafkaClient.CreateUser(ctx, userConfig)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to Create User",
-			fmt.Sprintf("Unable to create user %s: %s", plan.Username.ValueString(), err),
-		)
-		return
-	}
-
-	plan.ID = plan.Username
-
-	tflog.Info(ctx, "Created user", map[string]any{
-		"username": plan.Username.ValueString(),
-	})
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-}
-
-// Read refreshes the Terraform state with the latest data.
-func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state UserResourceModel
-
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	tflog.Debug(ctx, "Reading user", map[string]any{
-		"username": state.Username.ValueString(),
-	})
-
-	userInfo, err := r.kafkaClient.GetUser(ctx, state.Username.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddWarning(
-			"User Not Found",
-			fmt.Sprintf("User %s may have been deleted outside of Terraform: %s", state.Username.ValueString(), err),
-		)
-		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	state.ID = types.StringValue(userInfo.Username)
-	state.Username = types.StringValue(userInfo.Username)
-	state.Mechanism = types.StringValue(userInfo.Mechanism)
-
-	tflog.Info(ctx, "Read user", map[string]any{
-		"username": state.Username.ValueString(),
-	})
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-}
-
-// Update updates the resource and sets the updated Terraform state on success.
-func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// All attributes require replacement, so Update should not be called
+func (r *UserResource) Create(_ context.Context, _ resource.CreateRequest, resp *resource.CreateResponse) {
 	resp.Diagnostics.AddError(
-		"User Update Not Supported",
-		"User resources are immutable. Any changes require destroying and recreating the resource.",
+		"User Credential Management Unsupported",
+		"Streamline does not expose an API for Terraform to create SASL credentials. "+
+			"Manage credentials outside Terraform and grant authorization with streamline_acl.",
 	)
 }
 
-// Delete deletes the resource and removes the Terraform state on success.
-func (r *UserResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state UserResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	tflog.Debug(ctx, "Deleting user", map[string]any{
-		"username": state.Username.ValueString(),
-	})
-
-	err := r.kafkaClient.DeleteUser(ctx, state.Username.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to Delete User",
-			fmt.Sprintf("Unable to delete user %s: %s", state.Username.ValueString(), err),
-		)
-		return
-	}
-
-	tflog.Info(ctx, "Deleted user", map[string]any{
-		"username": state.Username.ValueString(),
-	})
+	resp.Diagnostics.AddWarning(
+		"Legacy User State Cannot Be Refreshed",
+		"Streamline does not expose an API for reading SASL credentials. Terraform is preserving this legacy state unchanged. "+
+			"After confirming credentials are managed externally, remove it with terraform state rm.",
+	)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// ImportState imports an existing resource into Terraform state.
-func (r *UserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("username"), req, resp)
+func (r *UserResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
+	resp.Diagnostics.AddError(
+		"User Credential Management Unsupported",
+		"Streamline does not expose an API for Terraform to update or rotate SASL credentials.",
+	)
 }
 
-// userMutex prevents concurrent user modifications.
-var userMutex sync.Mutex
+func (r *UserResource) Delete(_ context.Context, _ resource.DeleteRequest, resp *resource.DeleteResponse) {
+	resp.Diagnostics.AddError(
+		"User Credential Deletion Unsupported",
+		"Streamline does not expose an API for Terraform to delete SASL credentials. "+
+			"Delete the credential through its external owner, then remove this legacy entry with terraform state rm.",
+	)
+}
+
+func (r *UserResource) ImportState(_ context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resp.Diagnostics.AddError(
+		"User Import Unsupported",
+		"Cannot import "+req.ID+" because Streamline does not expose an API for reading SASL credentials.",
+	)
+}

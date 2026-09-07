@@ -5,22 +5,18 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net"
-	"os"
-	"strconv"
-	"strings"
-	"time"
+	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
-	"github.com/streamlinelabs/terraform-provider-streamline/internal/client"
 	"github.com/streamlinelabs/terraform-provider-streamline/internal/datasources"
 	"github.com/streamlinelabs/terraform-provider-streamline/internal/resources"
 )
@@ -30,7 +26,8 @@ var _ provider.Provider = &StreamlineProvider{}
 
 // StreamlineProvider defines the provider implementation.
 type StreamlineProvider struct {
-	version string
+	version               string
+	schemaResourceFactory func() resource.Resource
 }
 
 // StreamlineProviderModel describes the provider data model.
@@ -51,24 +48,24 @@ type StreamlineProviderModel struct {
 	MoonshotToken     types.String `tfsdk:"moonshot_token"`
 }
 
-// ProviderClients holds the initialized clients for Streamline and Schema Registry
-type ProviderClients struct {
-	Kafka          *client.StreamlineClient
-	SchemaRegistry *client.SchemaRegistryClient
-	Moonshot       *client.MoonshotClient
-}
-
 // New creates a new provider instance
-const (
-	defaultCreateTimeout = 30 * time.Second
-	defaultReadTimeout   = 10 * time.Second
-	defaultDeleteTimeout = 30 * time.Second
-)
-
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &StreamlineProvider{
 			version: version,
+		}
+	}
+}
+
+// NewForSchemaAcceptanceTests creates a provider whose schema resource removes
+// only Terraform state during test teardown. It must be used exclusively with
+// a disposable Schema Registry fixture because production schema deletion
+// remains intentionally unsupported.
+func NewForSchemaAcceptanceTests(version string) func() provider.Provider {
+	return func() provider.Provider {
+		return &StreamlineProvider{
+			version:               version,
+			schemaResourceFactory: resources.NewSchemaResourceForAcceptanceTests,
 		}
 	}
 }
@@ -98,7 +95,8 @@ Streamline is a Kafka-compatible streaming platform with support for:
 terraform {
   required_providers {
     streamline = {
-      source = "streamlinelabs/streamline"
+      source  = "streamlinelabs/streamline"
+      version = "~> 0.4.0"
     }
   }
 }
@@ -108,12 +106,9 @@ provider "streamline" {
 }
 
 resource "streamline_topic" "events" {
-  name       = "events"
-  partitions = 3
-
-  config = {
-    "retention.ms" = "604800000"  # 7 days
-  }
+  name         = "events"
+  partitions   = 3
+  retention_ms = 604800000 # 7 days
 }
 ` + "```" + `
 `,
@@ -121,10 +116,16 @@ resource "streamline_topic" "events" {
 			"bootstrap_servers": schema.StringAttribute{
 				Description: "Comma-separated list of Streamline bootstrap servers (e.g., 'localhost:9092,localhost:9093')",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"sasl_mechanism": schema.StringAttribute{
 				Description: "SASL mechanism for authentication (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"),
+				},
 			},
 			"sasl_username": schema.StringAttribute{
 				Description: "SASL username for authentication",
@@ -158,21 +159,39 @@ resource "streamline_topic" "events" {
 			"connection_timeout": schema.Int64Attribute{
 				Description: "Connection timeout in seconds (default: 30)",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
 			},
 			"request_timeout": schema.Int64Attribute{
 				Description: "Request timeout in seconds (default: 60)",
 				Optional:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
 			},
 			"schema_registry_url": schema.StringAttribute{
 				Description: "Schema Registry URL for schema management (e.g., 'http://localhost:8081')",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^https?://\S+$`),
+						"must be an absolute HTTP or HTTPS URL",
+					),
+				},
 			},
 			"moonshot_url": schema.StringAttribute{
-				Description: "Streamline Moonshot HTTP API base URL (e.g., 'http://localhost:9094'). Required to manage streamline_branch / streamline_contract resources.",
+				Description: "Reserved Streamline Moonshot HTTP API base URL. Legacy Moonshot resources are retained only for state compatibility and do not issue API requests.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^https?://\S+$`),
+						"must be an absolute HTTP or HTTPS URL",
+					),
+				},
 			},
 			"moonshot_token": schema.StringAttribute{
-				Description: "Bearer token for the Moonshot HTTP API.",
+				Description: "Sensitive authentication value reserved for the Moonshot HTTP API.",
 				Optional:    true,
 				Sensitive:   true,
 			},
@@ -184,177 +203,53 @@ resource "streamline_topic" "events" {
 func (p *StreamlineProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
 	tflog.Info(ctx, "Configuring Streamline provider")
 
-	var config StreamlineProviderModel
+	var model StreamlineProviderModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &model)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Default values from environment variables
-	bootstrapServers := os.Getenv("STREAMLINE_BOOTSTRAP_SERVERS")
-	saslMechanism := os.Getenv("STREAMLINE_SASL_MECHANISM")
-	saslUsername := os.Getenv("STREAMLINE_SASL_USERNAME")
-	saslPassword := os.Getenv("STREAMLINE_SASL_PASSWORD")
-	tlsEnabled := os.Getenv("STREAMLINE_TLS_ENABLED") == "true"
-	tlsCACert := os.Getenv("STREAMLINE_TLS_CA_CERT")
-	tlsClientCert := os.Getenv("STREAMLINE_TLS_CLIENT_CERT")
-	tlsClientKey := os.Getenv("STREAMLINE_TLS_CLIENT_KEY")
-	schemaRegistryURL := os.Getenv("STREAMLINE_SCHEMA_REGISTRY_URL")
-	moonshotURL := os.Getenv("STREAMLINE_MOONSHOT_URL")
-	moonshotToken := os.Getenv("STREAMLINE_MOONSHOT_TOKEN")
-
-	// Override with explicit configuration
-	if !config.BootstrapServers.IsNull() {
-		bootstrapServers = config.BootstrapServers.ValueString()
-	}
-	if !config.SaslMechanism.IsNull() {
-		saslMechanism = config.SaslMechanism.ValueString()
-	}
-	if !config.SaslUsername.IsNull() {
-		saslUsername = config.SaslUsername.ValueString()
-	}
-	if !config.SaslPassword.IsNull() {
-		saslPassword = config.SaslPassword.ValueString()
-	}
-	if !config.TLSEnabled.IsNull() {
-		tlsEnabled = config.TLSEnabled.ValueBool()
-	}
-	if !config.TLSCACert.IsNull() {
-		tlsCACert = config.TLSCACert.ValueString()
-	}
-	if !config.TLSClientCert.IsNull() {
-		tlsClientCert = config.TLSClientCert.ValueString()
-	}
-	if !config.TLSClientKey.IsNull() {
-		tlsClientKey = config.TLSClientKey.ValueString()
-	}
-	if !config.SchemaRegistryURL.IsNull() {
-		schemaRegistryURL = config.SchemaRegistryURL.ValueString()
-	}
-	if !config.MoonshotURL.IsNull() {
-		moonshotURL = config.MoonshotURL.ValueString()
-	}
-	if !config.MoonshotToken.IsNull() {
-		moonshotToken = config.MoonshotToken.ValueString()
-	}
-
-	// Validate required configuration
-	if bootstrapServers == "" {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("bootstrap_servers"),
-			"Missing Streamline Bootstrap Servers",
-			"The provider cannot create the Streamline client as there is a missing or empty value for the Streamline bootstrap servers. "+
-				"Set the bootstrap_servers value in the configuration or use the STREAMLINE_BOOTSTRAP_SERVERS environment variable.",
-		)
+	config := resolveProviderConfig(model)
+	resp.Diagnostics.Append(validateResolvedProviderConfig(config)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Validate bootstrap servers format and parse brokers
-	var brokers []string
-	for _, server := range strings.Split(bootstrapServers, ",") {
-		server = strings.TrimSpace(server)
-		if _, _, err := net.SplitHostPort(server); err != nil {
-			resp.Diagnostics.AddAttributeError(
-				path.Root("bootstrap_servers"),
-				"Invalid Bootstrap Server Format",
-				fmt.Sprintf("Invalid bootstrap server '%s': %s. Expected format: 'host:port'", server, err),
-			)
-			return
-		}
-		brokers = append(brokers, server)
-	}
-
-	// Parse timeouts
-	connectionTimeout := 30 * time.Second
-	requestTimeout := 60 * time.Second
-	if !config.ConnectionTimeout.IsNull() {
-		connectionTimeout = time.Duration(config.ConnectionTimeout.ValueInt64()) * time.Second
-	}
-	if !config.RequestTimeout.IsNull() {
-		requestTimeout = time.Duration(config.RequestTimeout.ValueInt64()) * time.Second
-	}
-
-	// Create Kafka client configuration
-	kafkaConfig := client.Config{
-		Brokers:        brokers,
-		Timeout:        requestTimeout,
-		TLSEnabled:     tlsEnabled,
-		TLSCACertPath:  tlsCACert,
-		TLSCertPath:    tlsClientCert,
-		TLSKeyPath:     tlsClientKey,
-		TLSSkipVerify: config.TLSSkipVerify.ValueBool(),
-	}
-
-	// Configure SASL if specified
-	if saslMechanism != "" {
-		kafkaConfig.SASLMechanism = saslMechanism
-		kafkaConfig.SASLUsername = saslUsername
-		kafkaConfig.SASLPassword = saslPassword
-	}
-
-	// Create Kafka client
-	kafkaClient, err := client.NewStreamlineClient(kafkaConfig)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to Create Kafka Client",
-			fmt.Sprintf("Unable to create Streamline Kafka client: %s", err),
-		)
+	brokers, diags := validateBootstrapServers(config.bootstrapServers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Create clients container
-	clients := &ProviderClients{
-		Kafka: kafkaClient,
-	}
-
-	// Create Schema Registry client if URL is provided
-	if schemaRegistryURL != "" {
-		schemaRegistryConfig := client.SchemaRegistryConfig{
-			URL:      schemaRegistryURL,
-			Username: saslUsername, // Reuse SASL credentials
-			Password: saslPassword,
-			Timeout:  requestTimeout,
-		}
-		clients.SchemaRegistry = client.NewSchemaRegistryClient(schemaRegistryConfig)
-	}
-
-	if moonshotURL != "" {
-		clients.Moonshot = client.NewMoonshotClient(client.MoonshotConfig{
-			BaseURL: moonshotURL,
-			Token:   moonshotToken,
-			Timeout: requestTimeout,
-		})
+	clients, diags := newProviderClients(config, brokers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	tflog.Debug(ctx, "Created Streamline clients", map[string]any{
-		"bootstrap_servers":   bootstrapServers,
-		"sasl_mechanism":      saslMechanism,
-		"tls_enabled":         tlsEnabled,
-		"schema_registry_url": schemaRegistryURL,
-		"connection_timeout":  connectionTimeout.String(),
+		"bootstrap_servers":   config.bootstrapServers,
+		"sasl_mechanism":      config.saslMechanism,
+		"tls_enabled":         config.tlsEnabled,
+		"schema_registry_url": config.schemaRegistryURL,
+		"connection_timeout":  config.connectionTimeout.String(),
 	})
 
 	resp.DataSourceData = clients
 	resp.ResourceData = clients
 }
 
-// Helper to extract integer from environment variable
-func getEnvInt(key string, defaultVal int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
-	}
-	return defaultVal
-}
-
 // Resources defines the resources implemented in the provider.
 func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Resource {
+	schemaResourceFactory := p.schemaResourceFactory
+	if schemaResourceFactory == nil {
+		schemaResourceFactory = resources.NewSchemaResource
+	}
 	return []func() resource.Resource{
 		resources.NewTopicResource,
 		resources.NewAclResource,
-		resources.NewSchemaResource,
+		schemaResourceFactory,
 		resources.NewUserResource,
 		resources.NewConsumerGroupResource,
 		resources.NewBranchResource,
@@ -367,8 +262,7 @@ func (p *StreamlineProvider) Resources(ctx context.Context) []func() resource.Re
 func (p *StreamlineProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		datasources.NewClusterDataSource,
+		datasources.NewConsumerGroupDataSource,
 		datasources.NewTopicsDataSource,
 	}
 }
-
-

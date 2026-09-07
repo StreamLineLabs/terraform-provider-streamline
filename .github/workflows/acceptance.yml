@@ -1,0 +1,52 @@
+name: Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_ready:
+        description: Confirm that the disposable ACL-enabled broker and Schema Registry fixture is ready
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    env:
+      STREAMLINE_BOOTSTRAP_SERVERS: ${{ vars.STREAMLINE_ACCEPTANCE_BOOTSTRAP_SERVERS }}
+      STREAMLINE_SCHEMA_REGISTRY_URL: ${{ vars.STREAMLINE_ACCEPTANCE_SCHEMA_REGISTRY_URL }}
+      # Schema Registry 0.3.0 cannot safely delete one Terraform-managed
+      # version. The test provider removes state during teardown and leaves
+      # subjects for disposal with this explicitly disposable fixture.
+      STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS: "1"
+    steps:
+      - name: Require an explicit fixture
+        run: |
+          if [[ "${{ inputs.fixture_ready }}" != "true" ]]; then
+            echo "::error::fixture_ready must be explicitly confirmed"
+            exit 1
+          fi
+          if [[ -z "${STREAMLINE_BOOTSTRAP_SERVERS}" ]]; then
+            echo "::error::Set the STREAMLINE_ACCEPTANCE_BOOTSTRAP_SERVERS repository variable"
+            exit 1
+          fi
+          if [[ -z "${STREAMLINE_SCHEMA_REGISTRY_URL}" ]]; then
+            echo "::error::Set the STREAMLINE_ACCEPTANCE_SCHEMA_REGISTRY_URL repository variable"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+
+      - name: Run acceptance tests
+        run: TF_ACC=1 go test ./internal/provider -v -timeout 30m

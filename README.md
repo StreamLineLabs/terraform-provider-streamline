@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/streamlinelabs/terraform-provider-streamline/actions/workflows/ci.yml/badge.svg)](https://github.com/streamlinelabs/terraform-provider-streamline/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 [![Terraform](https://img.shields.io/badge/Terraform-1.5+-7B42BC.svg)](https://www.terraform.io/)
 [![Release](https://img.shields.io/github/v/release/streamlinelabs/terraform-provider-streamline?label=release)](https://github.com/streamlinelabs/terraform-provider-streamline/releases)
 
@@ -13,12 +13,13 @@ This Terraform provider enables Infrastructure as Code (IaC) management of Strea
 - **Topic Management**: Create, configure, and manage topics
 - **ACL Management**: Fine-grained access control
 - **Schema Registry**: Manage Avro, Protobuf, and JSON schemas
-- **Data Sources**: Query cluster and topic information
+- **Data Sources**: Query clusters, topics, and existing consumer groups
+- **Upgrade Safety**: Preserve legacy resource schemas without simulating unsupported APIs
 
 ## Requirements
 
-- Terraform >= 1.0
-- Go >= 1.21 (for building from source)
+- Terraform >= 1.5
+- Go >= 1.25 (for building from source; releases use the Go 1.26.8 toolchain)
 - A running Streamline cluster
 
 ## Installation
@@ -29,8 +30,8 @@ This Terraform provider enables Infrastructure as Code (IaC) management of Strea
 terraform {
   required_providers {
     streamline = {
-      source  = "streamline-platform/streamline"
-      version = "~> 1.0"
+      source  = "streamlinelabs/streamline"
+      version = "~> 0.4.0"
     }
   }
 }
@@ -40,9 +41,9 @@ terraform {
 
 ```bash
 cd terraform-provider-streamline
-go build -o terraform-provider-streamline
-mkdir -p ~/.terraform.d/plugins/registry.terraform.io/streamline-platform/streamline/1.0.0/darwin_amd64/
-mv terraform-provider-streamline ~/.terraform.d/plugins/registry.terraform.io/streamline-platform/streamline/1.0.0/darwin_amd64/
+go build -ldflags "-X main.version=0.4.0" -o terraform-provider-streamline_v0.4.0
+mkdir -p ~/.terraform.d/plugins/registry.terraform.io/streamlinelabs/streamline/0.4.0/darwin_amd64/
+mv terraform-provider-streamline_v0.4.0 ~/.terraform.d/plugins/registry.terraform.io/streamlinelabs/streamline/0.4.0/darwin_amd64/
 ```
 
 ## Quick Start
@@ -53,12 +54,9 @@ provider "streamline" {
 }
 
 resource "streamline_topic" "events" {
-  name       = "events"
-  partitions = 6
-
-  config = {
-    "retention.ms" = "604800000"
-  }
+  name         = "events"
+  partitions   = 6
+  retention_ms = 604800000
 }
 ```
 
@@ -69,12 +67,18 @@ resource "streamline_topic" "events" {
 | `streamline_topic` | Manages topics |
 | `streamline_acl` | Manages access control lists |
 | `streamline_schema` | Manages Schema Registry schemas |
+| `streamline_user` | Deprecated legacy state compatibility; credential operations are unsupported |
+| `streamline_consumer_group` | Deprecated legacy read/delete model; use the data source |
+| `streamline_branch` | Deprecated legacy state compatibility; provisioning is unsupported |
+| `streamline_contract` | Deprecated legacy state compatibility; the broker has no registry CRUD |
+| `streamline_memory` | Deprecated legacy state compatibility; the broker has no partition CRUD |
 
 ## Data Sources
 
 | Data Source | Description |
 |-------------|-------------|
 | `streamline_cluster` | Retrieves cluster metadata |
+| `streamline_consumer_group` | Reads an existing consumer group |
 | `streamline_topics` | Lists topics with filtering |
 
 ## Authentication
@@ -117,12 +121,10 @@ Resources are organized by domain:
 
 ```
 internal/
-├── provider/        # Provider config, schema, authentication
-├── topic/           # streamline_topic resource + data source
-├── acl/             # streamline_acl resource
-├── schema/          # streamline_schema (Schema Registry) resource
-├── cluster/         # streamline_cluster data source
-└── client/          # Thin wrapper around the Streamline admin client
+├── provider/        # Provider config, registration, and acceptance tests
+├── resources/       # Supported resources plus deprecated compatibility schemas
+├── datasources/     # Cluster, topics, and consumer-group data sources
+└── client/          # Kafka, Schema Registry, and reserved Moonshot configuration
 ```
 
 Each resource implements the standard Plugin Framework lifecycle:
@@ -135,22 +137,29 @@ makes sense) `ImportState`.
 |--------|---------|-------|
 | Build provider | `go build -o terraform-provider-streamline` | Output binary in repo root |
 | Run unit tests | `go test ./...` | Fast (< 10 s); no external services |
-| Run acceptance tests | `TF_ACC=1 go test ./... -v -run TestAcc` | Requires a running Streamline cluster |
+| Run acceptance tests | `make testacc` | Requires broker/Schema Registry endpoints plus explicit retained-subject acknowledgement for a disposable fixture |
 | Lint | `golangci-lint run` | Same config as core repo |
 | Format | `go fmt ./...` | Run before committing |
-| Regenerate docs | `go generate ./...` | Uses [`terraform-plugin-docs`](https://github.com/hashicorp/terraform-plugin-docs) |
-| Local install | `make install` | Drops binary into `~/.terraform.d/plugins/...` |
+| Regenerate docs | `go generate ./...` | Uses pinned [`terraform-plugin-docs`](https://github.com/hashicorp/terraform-plugin-docs) v0.25.0 |
+| Release checks | `make release-check` | Validates the GoReleaser configuration without publishing |
 
 Acceptance tests follow [HashiCorp's TestAcc convention](https://developer.hashicorp.com/terraform/plugin/sdkv2/testing/acceptance-tests):
-they create real resources against the configured `bootstrap_servers` and
-clean them up at the end of each test. Run them against a throwaway
-docker-compose cluster:
+they create real resources against the configured endpoint and clean them up
+at the end of each test. This repository does not bundle a known-good fixture.
+Use a disposable ACL-enabled deployment with a Schema Registry endpoint:
 
 ```bash
-docker run -d --name streamline-test -p 9092:9092 -p 9094:9094 streamlinelabs/streamline:latest
-TF_ACC=1 STREAMLINE_BOOTSTRAP_SERVERS=localhost:9092 go test -v ./... -run TestAcc
-docker rm -f streamline-test
+export STREAMLINE_BOOTSTRAP_SERVERS=fixture.example.test:9092
+export STREAMLINE_SCHEMA_REGISTRY_URL=http://fixture.example.test:8081
+export STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS=1
+make testacc
 ```
+
+The retained-subject opt-in is mandatory: Streamline 0.3.0 cannot safely
+delete one Terraform-managed schema version, so schema acceptance teardown
+removes only Terraform test state. Use `make testacc` only with a disposable
+Schema Registry fixture whose retained subjects are discarded with the
+fixture.
 
 ## Provider Configuration
 
@@ -169,15 +178,22 @@ provider "streamline" {
   # tls_client_key   = file("client-key.pem")
 
   # Operational tuning
-  request_timeout_ms = 10000
-  retries            = 3
+  connection_timeout = 30
+  request_timeout    = 60
+
+  # Optional Schema Registry API
+  schema_registry_url = "https://schemas.example.com"
+
+  # Reserved for a future versioned Moonshot resource model
+  moonshot_url        = "https://moonshot.example.com"
+  moonshot_token      = var.moonshot_token
 }
 ```
 
-All provider arguments may also be supplied via environment variables prefixed
-with `STREAMLINE_` (e.g. `STREAMLINE_BOOTSTRAP_SERVERS`,
-`STREAMLINE_SASL_USERNAME`). Environment variables take precedence over
-HCL only when the HCL value is unset.
+Bootstrap, SASL, TLS certificate, Schema Registry, and Moonshot settings may be
+supplied through the documented `STREAMLINE_*` environment variables.
+`connection_timeout`, `request_timeout`, and `tls_skip_verify` are HCL-only.
+An HCL value takes precedence over its environment variable when both are set.
 
 ## Resource Reference (Summary)
 
@@ -185,17 +201,19 @@ HCL only when the HCL value is unset.
 
 ```hcl
 resource "streamline_topic" "events" {
-  name              = "events"
-  partitions        = 12
-  replication_factor = 3
+  name         = "events"
+  partitions   = 12
+  retention_ms = 604800000
 
   config = {
-    "retention.ms"           = "604800000"
-    "min.insync.replicas"    = "2"
-    "compression.type"       = "lz4"
+    "message.timestamp.difference.max.ms" = "86400000"
   }
 }
 ```
+
+Topic configuration values are creation-time settings because the current
+Kafka client cannot read them back or update them. Changing one replaces the
+topic; increasing `partitions` remains an in-place operation.
 
 Importable: `terraform import streamline_topic.events events`.
 
@@ -203,109 +221,74 @@ Importable: `terraform import streamline_topic.events events`.
 
 ```hcl
 resource "streamline_acl" "app_writer" {
-  resource_type = "TOPIC"
-  resource_name = "events"
-  pattern_type  = "LITERAL"
-  principal     = "User:app-writer"
-  host          = "*"
-  operation     = "WRITE"
-  permission    = "ALLOW"
+  resource_type   = "topic"
+  resource_name   = "events"
+  pattern_type    = "literal"
+  principal       = "User:app-writer"
+  host            = "10.0.0.10"
+  operation       = "write"
+  permission_type = "allow"
 }
 ```
+
+Managed ACLs require exact resource, principal, host, and operation values.
+Streamline 0.3.0 treats wildcard values as broad delete filters, so the
+provider rejects new creation/import and deletion of those values rather than
+risking unrelated ACLs. Existing broad ACL state remains readable.
 
 ### `streamline_schema`
 
 ```hcl
 resource "streamline_schema" "user_event" {
-  subject     = "user-events-value"
-  schema_type = "AVRO"
-  schema      = file("${path.module}/schemas/user_event.avsc")
-  compatibility_level = "BACKWARD"
+  subject       = "user-events-value"
+  schema_type   = "AVRO"
+  schema        = file("${path.module}/schemas/user_event.avsc")
+  compatibility = "BACKWARD"
 }
 ```
+
+Existing schema-reference state is preserved, but new or changed references
+are unsupported against Streamline 0.3.0 because the registry does not return
+them or include them in schema identity. Schema deletion is blocked before the
+broker's asynchronous subject-wide deletion request is sent.
 
 Full per-resource documentation lives under [`docs/`](docs/) (auto-generated
 from schema descriptions; do not edit by hand — update the schema and run
 `go generate`).
 
-## Moonshot Resources
+## Moonshot and Legacy Resources
 
-> ⚠️ **Experimental** — These resources require Streamline server 0.3.0+ with moonshot feature flags enabled.
+`streamline_branch`, `streamline_contract`, and `streamline_memory` are
+deprecated compatibility schemas. Their original Terraform models do not map
+to provisionable objects in the current broker API, so all lifecycle and
+import operations fail explicitly instead of simulating success or deleting
+state. Do not use them in new configurations.
 
-### `streamline_semantic_topic`
+`streamline_user` is retained for the same upgrade-safety reason. Streamline
+does not expose credential CRUD through the API used by this provider. Manage
+credentials externally and use `streamline_acl` for authorization.
 
-Create a topic with built-in vector search capabilities.
+The legacy `streamline_consumer_group` resource can read, import, and delete an
+existing group, but cannot create one. Use the identically named data source in
+new configurations.
 
-```hcl
-resource "streamline_semantic_topic" "logs" {
-  name       = "logs"
-  partitions = 6
+### Semantic topic settings
 
-  semantic = {
-    embed           = true
-    embedding_model = "bge-small"
-    dimensions      = 384
-  }
-
-  config = {
-    "retention.ms" = "604800000"
-  }
-}
-```
-
-### `streamline_memory`
-
-Manage MCP-based agent memory namespaces.
-
-```hcl
-resource "streamline_memory" "chatbot" {
-  namespace       = "chatbot-v1"
-  retention_days  = 90
-  semantic_search = true
-  embedding_model = "bge-small"
-}
-```
-
-### `streamline_branch`
-
-Create topic branches for replay, A/B testing, or counterfactual analysis.
-
-```hcl
-resource "streamline_branch" "experiment" {
-  source_topic = streamline_topic.events.name
-  branch_name  = "experiment-v2"
-  from_offset  = "latest"
-}
-```
-
-### `streamline_contract`
-
-Define data contracts with schema enforcement and attestation.
-
-```hcl
-resource "streamline_contract" "events" {
-  topic       = streamline_topic.events.name
-  schema_type = "json-schema"
-  schema      = file("${path.module}/schemas/events.json")
-  enforcement = "reject"
-
-  attestation = {
-    enabled        = true
-    signing_key_id = var.signing_key_id
-  }
-}
-```
+Legacy semantic topic attributes remain in the schema so old state can be
+decoded, but Streamline 0.3.0 ignores them during topic creation. The provider
+therefore rejects applying new semantic settings instead of recording
+simulated success.
 
 ## Importing Existing Resources
 
-All resources support `terraform import` using the Streamline-native
-identifier:
+Supported imports use these Streamline-native identifiers:
 
 | Resource | Import ID | Example |
 |----------|-----------|---------|
 | `streamline_topic` | topic name | `terraform import streamline_topic.events events` |
-| `streamline_acl` | `<resource_type>:<resource_name>:<principal>:<operation>` | `terraform import streamline_acl.x TOPIC:events:User:app:WRITE` |
+| `streamline_acl` | URL-escaped `resource_type\|pattern_type\|resource_name\|principal\|host\|operation\|permission_type` | `terraform import streamline_acl.x 'topic\|literal\|events\|User%3Aapp\|10.0.0.10\|write\|allow'` |
 | `streamline_schema` | `<subject>` | `terraform import streamline_schema.s user-events-value` |
+| Deprecated `streamline_consumer_group` resource | group ID | `terraform import streamline_consumer_group.legacy analytics` |
 
 ## Troubleshooting
 
@@ -314,7 +297,7 @@ identifier:
 | `Error: provider produced inconsistent result after apply` | Drift between desired and computed state | Inspect the resource's `Read`; ensure all computed attrs are populated post-create |
 | `connection refused` on plan | `bootstrap_servers` unreachable from your machine | Verify with `nc -vz <host> 9092` |
 | `unknown topic config: ...` | Streamline server version doesn't support that config key | Check server version; pin a compatible provider release |
-| Acceptance tests hang | No broker on `localhost:9092` | Start one (see "Inner Loop" above) |
+| Acceptance tests are skipped or blocked | No disposable fixture is configured | Set `STREAMLINE_BOOTSTRAP_SERVERS`, `STREAMLINE_SCHEMA_REGISTRY_URL`, and `STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS=1`, then use `make testacc` |
 | `terraform import` fails with "not found" | ID format wrong | See the import ID table above |
 | Docs out of date after schema change | Forgot to run `go generate` | Run it; commit `docs/` changes |
 
@@ -335,9 +318,11 @@ auto-publish webhook.
 Local dry-run:
 
 ```bash
-goreleaser release --snapshot --clean
-ls dist/
+goreleaser release --snapshot --clean --skip=sign
 ```
+
+Snapshot SBOM generation requires Syft. Snapshots do not publish or create
+GitHub attestations.
 
 ## Compatibility Matrix
 
@@ -345,6 +330,8 @@ ls dist/
 |----------|-----------|-------------------|----|
 | 0.1.x | ≥ 1.0 | 0.1.x – 0.2.x | 1.21+ |
 | 0.2.x | ≥ 1.5 | 0.2.x – 0.3.x | 1.22+ |
+| 0.3.0 | ≥ 1.5 | 0.3.x | 1.25+ |
+| 0.4.0 | ≥ 1.5 | 0.4.x | 1.25+ |
 
 Newer Streamline server versions are usually backward-compatible with older
 provider releases, but new resource types or config keys require a provider

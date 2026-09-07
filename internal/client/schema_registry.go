@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"time"
 )
 
@@ -72,6 +73,12 @@ type SchemaInfo struct {
 	References []SchemaReference `json:"references,omitempty"`
 }
 
+// SubjectVersionPair identifies one subject/version that uses a schema ID.
+type SubjectVersionPair struct {
+	Subject string `json:"subject"`
+	Version int    `json:"version"`
+}
+
 // RegisterSchemaRequest represents the request to register a schema
 type registerSchemaRequest struct {
 	Schema     string            `json:"schema"`
@@ -96,7 +103,7 @@ type configResponse struct {
 
 // RegisterSchema registers a new schema version
 func (c *SchemaRegistryClient) RegisterSchema(ctx context.Context, cfg SchemaConfig) (int, error) {
-	url := fmt.Sprintf("%s/subjects/%s/versions", c.baseURL, cfg.Subject)
+	url := fmt.Sprintf("%s/subjects/%s/versions", c.baseURL, schemaSubjectPathSegment(cfg.Subject))
 
 	reqBody := registerSchemaRequest{
 		Schema:     cfg.Schema,
@@ -104,32 +111,20 @@ func (c *SchemaRegistryClient) RegisterSchema(ctx context.Context, cfg SchemaCon
 		References: cfg.References,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal request: %w", err)
+	resp, err := c.send(ctx, http.MethodPost, url, "register schema", reqBody)
+	if resp == nil {
+		return 0, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+		return 0, err
 	}
-
-	req.Header.Set("Content-Type", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to register schema: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("failed to register schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return 0, responseError("register schema", resp.StatusCode, resp.Body)
 	}
 
 	var result registerSchemaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -143,33 +138,27 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 		versionStr = fmt.Sprintf("%d", version)
 	}
 
-	url := fmt.Sprintf("%s/subjects/%s/versions/%s", c.baseURL, subject, versionStr)
+	url := fmt.Sprintf("%s/subjects/%s/versions/%s", c.baseURL, schemaSubjectPathSegment(subject), versionStr)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	resp, err := c.send(ctx, http.MethodGet, url, "get schema", nil)
+	if resp == nil {
+		return nil, err
 	}
-
-	req.Header.Set("Accept", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get schema: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("schema not found: %s version %s", subject, versionStr)
+		return nil, NewNotFoundError("schema", fmt.Sprintf("%s version %s", subject, versionStr), nil)
+	}
+
+	if err != nil {
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, responseError("get schema", resp.StatusCode, resp.Body)
 	}
 
 	var result SchemaInfo
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -180,58 +169,91 @@ func (c *SchemaRegistryClient) GetSchema(ctx context.Context, subject string, ve
 func (c *SchemaRegistryClient) GetSchemaByID(ctx context.Context, id int) (string, error) {
 	url := fmt.Sprintf("%s/schemas/ids/%d", c.baseURL, id)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+	resp, err := c.send(ctx, http.MethodGet, url, "get schema", nil)
+	if resp == nil {
+		return "", err
 	}
-
-	req.Header.Set("Accept", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to get schema: %w", err)
+	if resp.StatusCode == http.StatusNotFound {
+		return "", NewNotFoundError("schema", fmt.Sprintf("id %d", id), nil)
 	}
-	defer resp.Body.Close()
+	if err != nil {
+		return "", err
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return "", responseError("get schema", resp.StatusCode, resp.Body)
 	}
 
 	var result struct {
 		Schema string `json:"schema"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return result.Schema, nil
 }
 
+// GetSchemaVersionForID returns the highest version of subject associated
+// with the exact schema ID returned by registration.
+func (c *SchemaRegistryClient) GetSchemaVersionForID(ctx context.Context, subject string, id int) (int, error) {
+	url := fmt.Sprintf("%s/schemas/ids/%d/versions", c.baseURL, id)
+
+	resp, err := c.send(ctx, http.MethodGet, url, "get schema versions", nil)
+	if resp == nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, NewNotFoundError("schema", fmt.Sprintf("id %d", id), nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, responseError("get schema versions", resp.StatusCode, resp.Body)
+	}
+
+	var pairs []SubjectVersionPair
+	if err := json.Unmarshal(resp.Body, &pairs); err != nil {
+		return 0, fmt.Errorf("failed to decode schema versions response: %w", err)
+	}
+
+	version := 0
+	for _, pair := range pairs {
+		if pair.Subject == subject && pair.Version > version {
+			version = pair.Version
+		}
+	}
+	if version == 0 {
+		return 0, NewNotFoundError(
+			"schema subject/version",
+			fmt.Sprintf("%s for id %d", subject, id),
+			nil,
+		)
+	}
+	return version, nil
+}
+
 // DeleteSchema deletes a schema subject (soft delete)
 func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string, permanent bool) error {
-	url := fmt.Sprintf("%s/subjects/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/subjects/%s", c.baseURL, schemaSubjectPathSegment(subject))
 	if permanent {
 		url += "?permanent=true"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	resp, err := c.send(ctx, http.MethodDelete, url, "delete schema", nil)
+	if resp == nil {
+		return err
 	}
-
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to delete schema: %w", err)
+	if resp.StatusCode == http.StatusNotFound {
+		return NewNotFoundError("schema subject", subject, nil)
 	}
-	defer resp.Body.Close()
+	if err != nil {
+		return err
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to delete schema: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return responseError("delete schema", resp.StatusCode, resp.Body)
 	}
 
 	return nil
@@ -239,34 +261,22 @@ func (c *SchemaRegistryClient) DeleteSchema(ctx context.Context, subject string,
 
 // SetCompatibility sets the compatibility level for a subject
 func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, level string) error {
-	url := fmt.Sprintf("%s/config/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/config/%s", c.baseURL, schemaSubjectPathSegment(subject))
 
 	reqBody := map[string]string{
 		"compatibility": level,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
+	resp, err := c.send(ctx, http.MethodPut, url, "set compatibility", reqBody)
+	if resp == nil {
+		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return err
 	}
-
-	req.Header.Set("Content-Type", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to set compatibility: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to set compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return responseError("set compatibility", resp.StatusCode, resp.Body)
 	}
 
 	return nil
@@ -274,34 +284,42 @@ func (c *SchemaRegistryClient) SetCompatibility(ctx context.Context, subject, le
 
 // GetCompatibility gets the compatibility level for a subject
 func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject string) (string, error) {
-	url := fmt.Sprintf("%s/config/%s", c.baseURL, subject)
+	url := fmt.Sprintf("%s/config/%s", c.baseURL, schemaSubjectPathSegment(subject))
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+	resp, err := c.send(ctx, http.MethodGet, url, "get compatibility", nil)
+	if resp == nil {
+		return "", err
 	}
-
-	req.Header.Set("Accept", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to get compatibility: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Return global default
-		return "BACKWARD", nil
+		globalURL := fmt.Sprintf("%s/config", c.baseURL)
+		globalResp, globalErr := c.send(ctx, http.MethodGet, globalURL, "get global compatibility", nil)
+		if globalResp == nil {
+			return "", globalErr
+		}
+		if globalErr != nil {
+			return "", globalErr
+		}
+		if globalResp.StatusCode != http.StatusOK {
+			return "", responseError("get global compatibility", globalResp.StatusCode, globalResp.Body)
+		}
+		var globalResult configResponse
+		if decodeErr := json.Unmarshal(globalResp.Body, &globalResult); decodeErr != nil {
+			return "", fmt.Errorf("failed to decode global compatibility response: %w", decodeErr)
+		}
+		return globalResult.CompatibilityLevel, nil
+	}
+
+	if err != nil {
+		return "", err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to get compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return "", responseError("get compatibility", resp.StatusCode, resp.Body)
 	}
 
 	var result configResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -312,27 +330,20 @@ func (c *SchemaRegistryClient) GetCompatibility(ctx context.Context, subject str
 func (c *SchemaRegistryClient) ListSubjects(ctx context.Context) ([]string, error) {
 	url := fmt.Sprintf("%s/subjects", c.baseURL)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	resp, err := c.send(ctx, http.MethodGet, url, "list subjects", nil)
+	if resp == nil {
+		return nil, err
 	}
-
-	req.Header.Set("Accept", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list subjects: %w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to list subjects: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, responseError("list subjects", resp.StatusCode, resp.Body)
 	}
 
 	var subjects []string
-	if err := json.NewDecoder(resp.Body).Decode(&subjects); err != nil {
+	if err := json.Unmarshal(resp.Body, &subjects); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -341,52 +352,129 @@ func (c *SchemaRegistryClient) ListSubjects(ctx context.Context) ([]string, erro
 
 // CheckCompatibility checks if a schema is compatible
 func (c *SchemaRegistryClient) CheckCompatibility(ctx context.Context, subject, schema, schemaType string) (bool, error) {
-	url := fmt.Sprintf("%s/compatibility/subjects/%s/versions/latest", c.baseURL, subject)
+	url := fmt.Sprintf(
+		"%s/compatibility/subjects/%s/versions/latest",
+		c.baseURL,
+		schemaSubjectPathSegment(subject),
+	)
 
 	reqBody := registerSchemaRequest{
 		Schema:     schema,
 		SchemaType: schemaType,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal request: %w", err)
+	resp, err := c.send(ctx, http.MethodPost, url, "check compatibility", reqBody)
+	if resp == nil {
+		return false, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/vnd.schemaregistry.v1+json")
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("failed to check compatibility: %w", err)
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		// No existing schema, so any schema is compatible
 		return true, nil
 	}
 
+	if err != nil {
+		return false, err
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("failed to check compatibility: status %d, body: %s", resp.StatusCode, string(bodyBytes))
+		return false, responseError("check compatibility", resp.StatusCode, resp.Body)
 	}
 
 	var result compatibilityResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return false, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return result.IsCompatible, nil
 }
 
+func schemaSubjectPathSegment(subject string) string {
+	switch subject {
+	case ".":
+		return "%2E"
+	case "..":
+		return "%2E%2E"
+	default:
+		return neturl.PathEscape(subject)
+	}
+}
+
 func (c *SchemaRegistryClient) setAuth(req *http.Request) {
 	if c.username != "" && c.password != "" {
 		req.SetBasicAuth(c.username, c.password)
 	}
+}
+
+// schemaRegistryResponse is the outcome of a completed Schema Registry
+// request: the HTTP status code and whatever portion of the response body
+// could be read. Each public operation keeps its own endpoint-specific
+// policy (which statuses are expected, how a 404 should be interpreted, and
+// how the body decodes). StatusCode is always populated once a response was
+// received from the server, even if reading the body subsequently failed,
+// so callers can still act on status-only fast paths (e.g. 404) without
+// needing the body.
+type schemaRegistryResponse struct {
+	StatusCode int
+	Body       []byte
+}
+
+// send is the transport helper shared by every Schema Registry operation. It
+// owns the mechanics common to all requests: marshaling an optional JSON
+// body, building the request with context, setting the Accept/Content-Type
+// headers the caller needs, applying Basic Auth, executing the request, and
+// closing/reading the response body. reqBody may be nil for requests
+// without a body. Headers follow each endpoint's original behavior: a JSON
+// body sets Content-Type, a bodyless GET sets Accept, and a bodyless
+// non-GET (e.g. DELETE) sets neither. op names the operation for error
+// messages (e.g. "get schema").
+//
+// The returned response is non-nil whenever a response was received from the
+// server, even if the returned error is non-nil because the body could not
+// be fully read; StatusCode is always valid in that case, so callers must
+// check status-only fast paths (like 404) before consulting the error or the
+// body. A nil response indicates the request itself failed (e.g. could not
+// be built or sent), in which case the error should be returned as-is.
+func (c *SchemaRegistryClient) send(ctx context.Context, method, url, op string, reqBody interface{}) (*schemaRegistryResponse, error) {
+	var bodyReader io.Reader = http.NoBody
+	if reqBody != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+		bodyReader = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/vnd.schemaregistry.v1+json")
+	} else if method == http.MethodGet {
+		req.Header.Set("Accept", "application/vnd.schemaregistry.v1+json")
+	}
+	c.setAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to %s: %w", op, err)
+	}
+	defer closeQuietly(ctx, resp.Body, "schema registry response body")
+
+	respBody, readErr := io.ReadAll(resp.Body)
+	result := &schemaRegistryResponse{StatusCode: resp.StatusCode, Body: respBody}
+	if readErr != nil {
+		return result, fmt.Errorf("failed to %s: status %d, could not read response body: %w", op, resp.StatusCode, readErr)
+	}
+
+	return result, nil
+}
+
+// responseError builds an error for a non-success Schema Registry response.
+// The registry encodes its error_code/message payload in the body, so the
+// body is included verbatim.
+func responseError(op string, statusCode int, body []byte) error {
+	return fmt.Errorf("failed to %s: status %d, body: %s", op, statusCode, string(body))
 }

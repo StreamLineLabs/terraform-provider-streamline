@@ -19,12 +19,6 @@ import (
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ datasource.DataSource = &ClusterDataSource{}
 
-// ProviderClients is a type alias to access the provider's client container
-type ProviderClients struct {
-	Kafka          *client.StreamlineClient
-	SchemaRegistry *client.SchemaRegistryClient
-}
-
 // ClusterDataSource defines the data source implementation.
 type ClusterDataSource struct {
 	kafkaClient *client.StreamlineClient
@@ -63,16 +57,13 @@ func (d *ClusterDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 		MarkdownDescription: `
 Retrieves information about the Streamline cluster.
 
-This data source provides metadata about the connected cluster including broker information and the controller node.
+This data source provides broker information and the controller node reported by Kafka.
+The Kafka API used by this provider does not expose a cluster identifier, so no synthetic cluster ID is returned.
 
 ## Example Usage
 
 ` + "```hcl" + `
 data "streamline_cluster" "current" {}
-
-output "cluster_id" {
-  value = data.streamline_cluster.current.cluster_id
-}
 
 output "controller_id" {
   value = data.streamline_cluster.current.controller_id
@@ -85,12 +76,14 @@ output "broker_count" {
 `,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Computed:    true,
-				Description: "The data source identifier.",
+				Computed:            true,
+				DeprecationMessage:  "The Kafka API does not expose a stable cluster identity; this compatibility field is always null.",
+				MarkdownDescription: "Deprecated compatibility field. Always null because the Kafka API does not expose a stable cluster identity.",
 			},
 			"cluster_id": schema.StringAttribute{
-				Computed:    true,
-				Description: "The unique identifier for the cluster.",
+				Computed:            true,
+				DeprecationMessage:  "The Kafka API does not expose a stable cluster identity; this compatibility field is always null.",
+				MarkdownDescription: "Deprecated compatibility field. Always null because the Kafka API does not expose a stable cluster identity.",
 			},
 			"controller_id": schema.Int64Attribute{
 				Computed:    true,
@@ -130,11 +123,11 @@ func (d *ClusterDataSource) Configure(ctx context.Context, req datasource.Config
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}
@@ -159,8 +152,8 @@ func (d *ClusterDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	}
 
 	// Set state from metadata
-	state.ID = types.StringValue("cluster")
-	state.ClusterID = types.StringValue(metadata.ClusterID)
+	state.ID = types.StringNull()
+	state.ClusterID = types.StringNull()
 	state.ControllerID = types.Int64Value(int64(metadata.ControllerID))
 
 	// Build brokers list
@@ -199,7 +192,6 @@ func (d *ClusterDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	state.Brokers = brokersList
 
 	tflog.Info(ctx, "Read cluster metadata", map[string]any{
-		"cluster_id":    state.ClusterID.ValueString(),
 		"controller_id": state.ControllerID.ValueInt64(),
 		"broker_count":  len(metadata.Brokers),
 	})

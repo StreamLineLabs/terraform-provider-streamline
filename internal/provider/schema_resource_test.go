@@ -19,6 +19,9 @@ func testAccSchemaPreCheck(t *testing.T) {
 	if v := os.Getenv("STREAMLINE_SCHEMA_REGISTRY_URL"); v == "" {
 		t.Skip("STREAMLINE_SCHEMA_REGISTRY_URL must be set for schema acceptance tests")
 	}
+	if os.Getenv("STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS") != "1" {
+		t.Skip("STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS=1 is required because schema teardown removes only Terraform state and requires a disposable registry fixture")
+	}
 }
 
 func TestAccSchemaResource_avro(t *testing.T) {
@@ -26,7 +29,7 @@ func TestAccSchemaResource_avro(t *testing.T) {
 	subject := fmt.Sprintf("tf-acc-test-%s-value", acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum))
 
 	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: testAccSchemaProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and Read
 			{
@@ -41,9 +44,10 @@ func TestAccSchemaResource_avro(t *testing.T) {
 			},
 			// ImportState
 			{
-				ResourceName:      "streamline_schema.test",
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            "streamline_schema.test",
+				ImportState:             true,
+				ImportStateId:           subject,
+				ImportStateVerify:       true,
 				ImportStateVerifyIgnore: []string{"schema"},
 			},
 		},
@@ -55,7 +59,7 @@ func TestAccSchemaResource_json(t *testing.T) {
 	subject := fmt.Sprintf("tf-acc-test-%s-value", acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum))
 
 	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: testAccSchemaProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccSchemaResourceJsonConfig(subject),
@@ -73,7 +77,7 @@ func TestAccSchemaResource_updateCompatibility(t *testing.T) {
 	subject := fmt.Sprintf("tf-acc-test-%s-value", acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum))
 
 	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ProtoV6ProviderFactories: testAccSchemaProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: testAccSchemaResourceAvroConfig(subject),
@@ -92,12 +96,12 @@ func TestAccSchemaResource_updateCompatibility(t *testing.T) {
 }
 
 func schemaProviderConfig() string {
-	return `
+	return fmt.Sprintf(`
 provider "streamline" {
-  bootstrap_servers  = "localhost:9092"
-  schema_registry_url = "http://localhost:8081"
+  bootstrap_servers   = %q
+  schema_registry_url = %q
 }
-`
+`, os.Getenv("STREAMLINE_BOOTSTRAP_SERVERS"), os.Getenv("STREAMLINE_SCHEMA_REGISTRY_URL"))
 }
 
 func testAccSchemaResourceAvroConfig(subject string) string {

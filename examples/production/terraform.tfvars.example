@@ -6,3 +6,5 @@
 bootstrap_servers = "streamline.example.com:9092"
 sasl_username     = "admin"
 sasl_password     = "CHANGE_ME"
+producer_acl_host = "10.0.10.20"
+consumer_acl_host = "10.0.20.30"

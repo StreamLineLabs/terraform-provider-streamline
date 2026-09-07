@@ -6,8 +6,8 @@
 terraform {
   required_providers {
     streamline = {
-      source  = "streamline-platform/streamline"
-      version = "~> 1.0"
+      source  = "streamlinelabs/streamline"
+      version = "~> 0.4.0"
     }
   }
 }
@@ -19,21 +19,15 @@ provider "streamline" {
 
 # Create topics for an event-driven application
 resource "streamline_topic" "user_events" {
-  name       = "user-events"
-  partitions = 3
-
-  config = {
-    "retention.ms" = "604800000" # 7 days
-  }
+  name         = "user-events"
+  partitions   = 3
+  retention_ms = 604800000 # 7 days
 }
 
 resource "streamline_topic" "order_events" {
-  name       = "order-events"
-  partitions = 6
-
-  config = {
-    "retention.ms" = "2592000000" # 30 days
-  }
+  name         = "order-events"
+  partitions   = 6
+  retention_ms = 2592000000 # 30 days
 }
 
 resource "streamline_topic" "user_state" {
@@ -41,12 +35,6 @@ resource "streamline_topic" "user_state" {
   partitions     = 12
   cleanup_policy = "compact"
   retention_ms   = -1 # Infinite for compacted topics
-}
-
-# Create a user for the application
-resource "streamline_user" "app" {
-  username  = "my-application"
-  mechanism = "SCRAM-SHA-256"
 }
 
 # Output topic names

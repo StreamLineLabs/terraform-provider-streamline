@@ -7,11 +7,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -28,7 +32,8 @@ var _ resource.ResourceWithImportState = &SchemaResource{}
 
 // SchemaResource defines the schema resource implementation.
 type SchemaResource struct {
-	schemaRegistryClient *client.SchemaRegistryClient
+	schemaRegistryClient      *client.SchemaRegistryClient
+	acceptanceStateOnlyDelete bool
 }
 
 // SchemaResourceModel describes the schema resource data model.
@@ -50,9 +55,24 @@ type SchemaReference struct {
 	Version types.Int64  `tfsdk:"version"`
 }
 
+var schemaReferenceAttrTypes = map[string]attr.Type{
+	"name":    types.StringType,
+	"subject": types.StringType,
+	"version": types.Int64Type,
+}
+
 // NewSchemaResource creates a new schema resource
 func NewSchemaResource() resource.Resource {
 	return &SchemaResource{}
+}
+
+// NewSchemaResourceForAcceptanceTests returns the production schema resource
+// with state-only teardown enabled. Streamline 0.3.0 cannot safely delete one
+// managed schema version, so acceptance tests may use this only with a
+// disposable registry fixture where retained subjects are discarded with the
+// fixture.
+func NewSchemaResourceForAcceptanceTests() resource.Resource {
+	return &SchemaResource{acceptanceStateOnlyDelete: true}
 }
 
 // Metadata returns the resource type name.
@@ -139,6 +159,9 @@ resource "streamline_schema" "metric_value" {
 			"subject": schema.StringAttribute{
 				Required:    true,
 				Description: "The subject name for the schema (e.g., 'topic-value' or 'topic-key').",
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -155,6 +178,9 @@ resource "streamline_schema" "metric_value" {
 			"schema": schema.StringAttribute{
 				Required:    true,
 				Description: "The schema definition as a string.",
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"version": schema.Int64Attribute{
 				Computed:    true,
@@ -185,21 +211,34 @@ resource "streamline_schema" "metric_value" {
 				},
 			},
 			"references": schema.ListNestedAttribute{
-				Optional:    true,
-				Description: "Schema references for complex schemas.",
+				Optional:           true,
+				Description:        "Legacy create-time schema references. Existing state is preserved, but Streamline 0.3.0 cannot round-trip or safely update references.",
+				DeprecationMessage: "Schema references cannot be verified or updated safely against Streamline 0.3.0.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.RequiresReplace(),
+				},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Required:    true,
 							Description: "The name of the reference.",
+							Validators: []validator.String{
+								stringvalidator.LengthAtLeast(1),
+							},
 						},
 						"subject": schema.StringAttribute{
 							Required:    true,
 							Description: "The subject of the referenced schema.",
+							Validators: []validator.String{
+								stringvalidator.LengthAtLeast(1),
+							},
 						},
 						"version": schema.Int64Attribute{
 							Required:    true,
 							Description: "The version of the referenced schema.",
+							Validators: []validator.Int64{
+								int64validator.AtLeast(1),
+							},
 						},
 					},
 				},
@@ -214,11 +253,11 @@ func (r *SchemaResource) Configure(ctx context.Context, req resource.ConfigureRe
 		return
 	}
 
-	clients, ok := req.ProviderData.(*ProviderClients)
+	clients, ok := req.ProviderData.(*client.Clients)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *ProviderClients, got: %T", req.ProviderData),
+			fmt.Sprintf("Expected *client.Clients, got: %T", req.ProviderData),
 		)
 		return
 	}
@@ -232,6 +271,110 @@ func (r *SchemaResource) Configure(ctx context.Context, req resource.ConfigureRe
 	}
 
 	r.schemaRegistryClient = clients.SchemaRegistry
+}
+
+func schemaConfigFromModel(
+	ctx context.Context,
+	model SchemaResourceModel,
+	diags *diag.Diagnostics,
+) client.SchemaConfig {
+	config := client.SchemaConfig{
+		Subject:    model.Subject.ValueString(),
+		Schema:     model.Schema.ValueString(),
+		SchemaType: model.SchemaType.ValueString(),
+	}
+	if model.References.IsNull() || model.References.IsUnknown() {
+		return config
+	}
+
+	var refs []SchemaReference
+	diags.Append(model.References.ElementsAs(ctx, &refs, false)...)
+	if diags.HasError() {
+		return config
+	}
+	if len(refs) > 0 {
+		diags.AddAttributeError(
+			path.Root("references"),
+			"Schema References Unsupported",
+			"Streamline 0.3.0 does not return references or include them in schema identity, so Terraform cannot manage them safely.",
+		)
+	}
+	return config
+}
+
+func (r *SchemaResource) resolveRegisteredSchema(
+	ctx context.Context,
+	subject string,
+	schemaID int,
+) (*client.SchemaInfo, error) {
+	version, err := r.schemaRegistryClient.GetSchemaVersionForID(ctx, subject, schemaID)
+	if err != nil {
+		return nil, err
+	}
+	info, err := r.schemaRegistryClient.GetSchema(ctx, subject, version)
+	if err != nil {
+		return nil, err
+	}
+	if info == nil {
+		return nil, fmt.Errorf("registry returned an empty schema for %s version %d", subject, version)
+	}
+	if info.ID != schemaID {
+		return nil, fmt.Errorf(
+			"registry returned schema ID %d for %s version %d, expected %d",
+			info.ID,
+			subject,
+			version,
+			schemaID,
+		)
+	}
+	return info, nil
+}
+
+func applySchemaInfo(
+	ctx context.Context,
+	model *SchemaResourceModel,
+	info *client.SchemaInfo,
+	diags *diag.Diagnostics,
+) {
+	model.Schema = types.StringValue(info.Schema)
+	model.SchemaID = types.Int64Value(int64(info.ID))
+	model.Version = types.Int64Value(int64(info.Version))
+	model.ID = types.StringValue(fmt.Sprintf("%s:%d", model.Subject.ValueString(), info.Version))
+	schemaType := info.SchemaType
+	if schemaType == "" {
+		// Confluent-compatible registries omit schemaType for Avro, whose
+		// canonical wire default is AVRO. Persist the explicit value so import
+		// and refresh do not leave an unknown/stale Terraform attribute.
+		schemaType = "AVRO"
+	}
+	model.SchemaType = types.StringValue(schemaType)
+
+	if len(info.References) == 0 {
+		return
+	}
+	references := make([]SchemaReference, 0, len(info.References))
+	for _, ref := range info.References {
+		references = append(references, SchemaReference{
+			Name:    types.StringValue(ref.Name),
+			Subject: types.StringValue(ref.Subject),
+			Version: types.Int64Value(int64(ref.Version)),
+		})
+	}
+	value, valueDiags := types.ListValueFrom(
+		ctx,
+		types.ObjectType{AttrTypes: schemaReferenceAttrTypes},
+		references,
+	)
+	diags.Append(valueDiags...)
+	if !diags.HasError() {
+		model.References = value
+	}
+}
+
+func schemaDefinitionChanged(plan, state SchemaResourceModel) bool {
+	return !plan.Schema.Equal(state.Schema) ||
+		!plan.SchemaType.Equal(state.SchemaType) ||
+		!plan.References.Equal(state.References)
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -248,36 +391,20 @@ func (r *SchemaResource) Create(ctx context.Context, req resource.CreateRequest,
 		"schema_type": plan.SchemaType.ValueString(),
 	})
 
-	// Build schema configuration
-	schemaConfig := client.SchemaConfig{
-		Subject:    plan.Subject.ValueString(),
-		Schema:     plan.Schema.ValueString(),
-		SchemaType: plan.SchemaType.ValueString(),
-	}
-
-	// Extract references if provided
-	if !plan.References.IsNull() {
-		var refs []SchemaReference
-		resp.Diagnostics.Append(plan.References.ElementsAs(ctx, &refs, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		for _, ref := range refs {
-			schemaConfig.References = append(schemaConfig.References, client.SchemaReference{
-				Name:    ref.Name.ValueString(),
-				Subject: ref.Subject.ValueString(),
-				Version: int(ref.Version.ValueInt64()),
-			})
-		}
+	schemaConfig := schemaConfigFromModel(ctx, plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// Set compatibility level if specified
-	if !plan.Compatibility.IsNull() {
+	if !plan.Compatibility.IsNull() && !plan.Compatibility.IsUnknown() {
 		err := r.schemaRegistryClient.SetCompatibility(ctx, plan.Subject.ValueString(), plan.Compatibility.ValueString())
 		if err != nil {
-			tflog.Warn(ctx, "Failed to set compatibility level before registration", map[string]any{
-				"error": err.Error(),
-			})
+			resp.Diagnostics.AddError(
+				"Failed to Set Schema Compatibility",
+				fmt.Sprintf("Unable to set compatibility for subject %s: %s", plan.Subject.ValueString(), err),
+			)
+			return
 		}
 	}
 
@@ -291,20 +418,23 @@ func (r *SchemaResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	// Get the schema info to get the version
-	schemaInfo, err := r.schemaRegistryClient.GetSchema(ctx, plan.Subject.ValueString(), 0) // 0 = latest
+	schemaInfo, err := r.resolveRegisteredSchema(ctx, plan.Subject.ValueString(), schemaID)
 	if err != nil {
-		tflog.Warn(ctx, "Failed to get schema info after registration", map[string]any{
-			"error": err.Error(),
-		})
-		plan.Version = types.Int64Value(1)
-	} else {
-		plan.Version = types.Int64Value(int64(schemaInfo.Version))
+		resp.Diagnostics.AddError(
+			"Failed to Read Registered Schema",
+			fmt.Sprintf(
+				"Schema ID %d was registered for subject %s, but its exact version could not be resolved: %s. Import the subject to recover it before retrying.",
+				schemaID,
+				plan.Subject.ValueString(),
+				err,
+			),
+		)
+		return
 	}
-
-	// Set computed values
-	plan.SchemaID = types.Int64Value(int64(schemaID))
-	plan.ID = types.StringValue(fmt.Sprintf("%s:%d", plan.Subject.ValueString(), plan.Version.ValueInt64()))
+	applySchemaInfo(ctx, &plan, schemaInfo, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	tflog.Info(ctx, "Created schema", map[string]any{
 		"id":        plan.ID.ValueString(),
@@ -330,28 +460,33 @@ func (r *SchemaResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	// Get schema from registry
 	schemaInfo, err := r.schemaRegistryClient.GetSchema(ctx, state.Subject.ValueString(), int(state.Version.ValueInt64()))
-	if err != nil {
-		resp.Diagnostics.AddWarning(
-			"Schema Not Found",
-			fmt.Sprintf("Schema may have been deleted outside of Terraform: %s", err),
+	if handleReadError(ctx, resp, "Schema", state.ID.ValueString(), err) {
+		return
+	}
+	if schemaInfo == nil {
+		resp.Diagnostics.AddError(
+			"Failed to Read Schema",
+			fmt.Sprintf("Unable to read schema %q: the client returned an empty response", state.ID.ValueString()),
 		)
-		resp.State.RemoveResource(ctx)
 		return
 	}
 
 	// Update state from server
-	state.Schema = types.StringValue(schemaInfo.Schema)
-	state.SchemaID = types.Int64Value(int64(schemaInfo.ID))
-	state.Version = types.Int64Value(int64(schemaInfo.Version))
-	if schemaInfo.SchemaType != "" {
-		state.SchemaType = types.StringValue(schemaInfo.SchemaType)
+	applySchemaInfo(ctx, &state, schemaInfo, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// Get compatibility level
 	compatibility, err := r.schemaRegistryClient.GetCompatibility(ctx, state.Subject.ValueString())
-	if err == nil {
-		state.Compatibility = types.StringValue(compatibility)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to Read Schema Compatibility",
+			fmt.Sprintf("Unable to read compatibility for subject %s: %s", state.Subject.ValueString(), err),
+		)
+		return
 	}
+	state.Compatibility = types.StringValue(compatibility)
 
 	tflog.Info(ctx, "Read schema", map[string]any{
 		"id":      state.ID.ValueString(),
@@ -388,29 +523,10 @@ func (r *SchemaResource) Update(ctx context.Context, req resource.UpdateRequest,
 		}
 	}
 
-	// Check if schema content changed - if so, register new version
-	if !plan.Schema.Equal(state.Schema) {
-		// Build schema configuration
-		schemaConfig := client.SchemaConfig{
-			Subject:    plan.Subject.ValueString(),
-			Schema:     plan.Schema.ValueString(),
-			SchemaType: plan.SchemaType.ValueString(),
-		}
-
-		// Extract references if provided
-		if !plan.References.IsNull() {
-			var refs []SchemaReference
-			resp.Diagnostics.Append(plan.References.ElementsAs(ctx, &refs, false)...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			for _, ref := range refs {
-				schemaConfig.References = append(schemaConfig.References, client.SchemaReference{
-					Name:    ref.Name.ValueString(),
-					Subject: ref.Subject.ValueString(),
-					Version: int(ref.Version.ValueInt64()),
-				})
-			}
+	if schemaDefinitionChanged(plan, state) {
+		schemaConfig := schemaConfigFromModel(ctx, plan, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
 		}
 
 		// Register new schema version
@@ -423,15 +539,23 @@ func (r *SchemaResource) Update(ctx context.Context, req resource.UpdateRequest,
 			return
 		}
 
-		// Get the new version number
-		schemaInfo, err := r.schemaRegistryClient.GetSchema(ctx, plan.Subject.ValueString(), 0) // 0 = latest
+		schemaInfo, err := r.resolveRegisteredSchema(ctx, plan.Subject.ValueString(), schemaID)
 		if err != nil {
-			plan.Version = types.Int64Value(state.Version.ValueInt64() + 1)
-		} else {
-			plan.Version = types.Int64Value(int64(schemaInfo.Version))
+			resp.Diagnostics.AddError(
+				"Failed to Read Updated Schema",
+				fmt.Sprintf(
+					"Schema ID %d was registered for subject %s, but its exact version could not be resolved: %s. Refresh or import the subject before retrying.",
+					schemaID,
+					plan.Subject.ValueString(),
+					err,
+				),
+			)
+			return
 		}
-
-		plan.SchemaID = types.Int64Value(int64(schemaID))
+		applySchemaInfo(ctx, &plan, schemaInfo, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	} else {
 		// Keep existing version and schema ID
 		plan.Version = state.Version
@@ -461,19 +585,24 @@ func (r *SchemaResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		"id": state.ID.ValueString(),
 	})
 
-	// Soft delete the schema (can be permanently deleted with permanent=true)
-	err := r.schemaRegistryClient.DeleteSchema(ctx, state.Subject.ValueString(), false)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to Delete Schema",
-			fmt.Sprintf("Unable to delete schema subject %s: %s", state.Subject.ValueString(), err),
+	if r.acceptanceStateOnlyDelete {
+		resp.Diagnostics.AddWarning(
+			"Schema Retained During Acceptance Cleanup",
+			fmt.Sprintf(
+				"Removed schema %q from Terraform acceptance-test state without deleting the remote subject. The acceptance provider is valid only with a disposable Schema Registry fixture.",
+				state.ID.ValueString(),
+			),
 		)
 		return
 	}
 
-	tflog.Info(ctx, "Deleted schema", map[string]any{
-		"id": state.ID.ValueString(),
-	})
+	resp.Diagnostics.AddError(
+		"Schema Deletion Unsupported",
+		fmt.Sprintf(
+			"Refusing to delete schema %q because Streamline 0.3.0 only exposes an asynchronous subject-wide deletion that can remove every version after Terraform has already received an ambiguous result. Delete it through a verified external process, then remove the Terraform state entry.",
+			state.ID.ValueString(),
+		),
+	)
 }
 
 // ImportState imports an existing resource into Terraform state.

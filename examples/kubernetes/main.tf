@@ -2,13 +2,13 @@
 #
 # This example demonstrates deploying Streamline resources alongside
 # Kubernetes-managed infrastructure using the Streamline operator.
-# It provisions topics, users, and ACLs for a microservices architecture.
+# It provisions topics and ACLs for a microservices architecture.
 
 terraform {
   required_providers {
     streamline = {
-      source  = "streamline-platform/streamline"
-      version = "~> 1.0"
+      source  = "streamlinelabs/streamline"
+      version = "~> 0.4.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -29,6 +29,11 @@ variable "namespace" {
   description = "Kubernetes namespace for application resources"
 }
 
+variable "acl_source_host" {
+  type        = string
+  description = "Exact stable egress host for application ACLs; wildcard hosts are not safely deletable"
+}
+
 # Connect to Streamline running in Kubernetes
 provider "streamline" {
   bootstrap_servers = var.streamline_endpoint
@@ -45,66 +50,35 @@ provider "kubernetes" {
 data "streamline_cluster" "current" {}
 
 # ============================================================================
-# Users for Microservices
-# ============================================================================
-
-resource "streamline_user" "order_service" {
-  username  = "order-service"
-  mechanism = "SCRAM-SHA-256"
-}
-
-resource "streamline_user" "payment_service" {
-  username  = "payment-service"
-  mechanism = "SCRAM-SHA-256"
-}
-
-resource "streamline_user" "notification_service" {
-  username  = "notification-service"
-  mechanism = "SCRAM-SHA-256"
-}
-
-# ============================================================================
 # Topics
 # ============================================================================
 
 resource "streamline_topic" "orders" {
-  name              = "orders"
-  partitions        = 12
+  name               = "orders"
+  partitions         = 12
   replication_factor = 1
-
-  config = {
-    "retention.ms" = "604800000" # 7 days
-  }
+  retention_ms       = 604800000 # 7 days
 }
 
 resource "streamline_topic" "payments" {
-  name              = "payments"
-  partitions        = 6
+  name               = "payments"
+  partitions         = 6
   replication_factor = 1
-
-  config = {
-    "retention.ms" = "604800000"
-  }
+  retention_ms       = 604800000
 }
 
 resource "streamline_topic" "notifications" {
-  name              = "notifications"
-  partitions        = 3
+  name               = "notifications"
+  partitions         = 3
   replication_factor = 1
-
-  config = {
-    "retention.ms" = "86400000" # 1 day
-  }
+  retention_ms       = 86400000 # 1 day
 }
 
 resource "streamline_topic" "orders_dlq" {
-  name              = "orders-dlq"
-  partitions        = 3
+  name               = "orders-dlq"
+  partitions         = 3
   replication_factor = 1
-
-  config = {
-    "retention.ms" = "2592000000" # 30 days
-  }
+  retention_ms       = 2592000000 # 30 days
 }
 
 # ============================================================================
@@ -114,7 +88,8 @@ resource "streamline_topic" "orders_dlq" {
 resource "streamline_acl" "order_service_write_orders" {
   resource_type   = "topic"
   resource_name   = streamline_topic.orders.name
-  principal       = "User:${streamline_user.order_service.username}"
+  principal       = "User:order-service"
+  host            = var.acl_source_host
   operation       = "write"
   permission_type = "allow"
 }
@@ -122,7 +97,8 @@ resource "streamline_acl" "order_service_write_orders" {
 resource "streamline_acl" "order_service_read_payments" {
   resource_type   = "topic"
   resource_name   = streamline_topic.payments.name
-  principal       = "User:${streamline_user.order_service.username}"
+  principal       = "User:order-service"
+  host            = var.acl_source_host
   operation       = "read"
   permission_type = "allow"
 }
@@ -134,7 +110,8 @@ resource "streamline_acl" "order_service_read_payments" {
 resource "streamline_acl" "payment_service_read_orders" {
   resource_type   = "topic"
   resource_name   = streamline_topic.orders.name
-  principal       = "User:${streamline_user.payment_service.username}"
+  principal       = "User:payment-service"
+  host            = var.acl_source_host
   operation       = "read"
   permission_type = "allow"
 }
@@ -142,7 +119,8 @@ resource "streamline_acl" "payment_service_read_orders" {
 resource "streamline_acl" "payment_service_write_payments" {
   resource_type   = "topic"
   resource_name   = streamline_topic.payments.name
-  principal       = "User:${streamline_user.payment_service.username}"
+  principal       = "User:payment-service"
+  host            = var.acl_source_host
   operation       = "write"
   permission_type = "allow"
 }
@@ -154,7 +132,8 @@ resource "streamline_acl" "payment_service_write_payments" {
 resource "streamline_acl" "notification_service_read_orders" {
   resource_type   = "topic"
   resource_name   = streamline_topic.orders.name
-  principal       = "User:${streamline_user.notification_service.username}"
+  principal       = "User:notification-service"
+  host            = var.acl_source_host
   operation       = "read"
   permission_type = "allow"
 }
@@ -162,7 +141,8 @@ resource "streamline_acl" "notification_service_read_orders" {
 resource "streamline_acl" "notification_service_write_notifications" {
   resource_type   = "topic"
   resource_name   = streamline_topic.notifications.name
-  principal       = "User:${streamline_user.notification_service.username}"
+  principal       = "User:notification-service"
+  host            = var.acl_source_host
   operation       = "write"
   permission_type = "allow"
 }
@@ -190,10 +170,6 @@ resource "kubernetes_config_map" "streamline_config" {
 # Outputs
 # ============================================================================
 
-output "cluster_id" {
-  value = data.streamline_cluster.current.cluster_id
-}
-
 output "broker_count" {
   value = length(data.streamline_cluster.current.brokers)
 }
@@ -205,12 +181,4 @@ output "topics" {
     notifications = streamline_topic.notifications.name
     orders_dlq    = streamline_topic.orders_dlq.name
   }
-}
-
-output "users" {
-  value = [
-    streamline_user.order_service.username,
-    streamline_user.payment_service.username,
-    streamline_user.notification_service.username,
-  ]
 }

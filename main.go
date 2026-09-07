@@ -7,7 +7,8 @@
 // - Topics (create, configure, delete)
 // - ACLs (access control lists)
 // - Schemas (schema registry management)
-// - Consumer Groups (offset management)
+// - Moonshot branches, contracts, and memory
+// - Consumer group inspection through a data source
 //
 // Usage:
 //
@@ -23,7 +24,8 @@
 //	  bootstrap_servers = "localhost:9092"
 //	}
 
-//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-name streamline
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 generate --provider-name streamline
+//go:generate go run ./internal/cmd/trimdocs
 
 package main
 
@@ -38,7 +40,7 @@ import (
 
 var (
 	// Version is set during build via -ldflags; defaults to release version
-	version string = "0.3.0"
+	version string = "0.4.0"
 )
 
 func main() {
@@ -57,4 +59,3 @@ func main() {
 		log.Fatal(err.Error())
 	}
 }
-

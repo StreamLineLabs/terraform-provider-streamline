@@ -3,3 +3,4 @@
 
 streamline_endpoint = "streamline.streamline-system.svc.cluster.local:9092"
 namespace           = "default"
+acl_source_host     = "10.42.0.10"

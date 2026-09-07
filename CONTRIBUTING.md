@@ -6,7 +6,7 @@ Thank you for your interest in contributing! Please review the [organization-wid
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25+ (Go 1.26.8 is declared as the module toolchain)
 - Terraform CLI 1.5+ (for acceptance tests)
 - A running Streamline instance (for acceptance tests)
 
@@ -25,6 +25,7 @@ TF_ACC=1 go test ./internal/provider/ -v -timeout 30m
 
 # Run acceptance tests with schema registry
 export STREAMLINE_SCHEMA_REGISTRY_URL=http://localhost:8081
+export STREAMLINE_SCHEMA_ACCEPTANCE_ALLOW_RETAINED_SUBJECTS=1
 TF_ACC=1 go test ./internal/provider/ -v -run TestAccSchema -timeout 30m
 
 # Generate documentation
@@ -49,12 +50,11 @@ go generate ./...
 ## Architecture
 
 - `internal/provider/` — Provider configuration and registration
-- `internal/resources/` — Resource implementations (topic, ACL, schema)
-- `internal/datasources/` — Data source implementations (cluster, topics)
+- `internal/resources/` — Resource implementations (topic, ACL, schema, Moonshot)
+- `internal/datasources/` — Data source implementations (cluster, topics, consumer groups)
 - `internal/client/` — Streamline/Kafka client wrapper
 
 ## License
 
 By contributing, you agree that your contributions will be licensed under the Apache-2.0 License.
 <!-- feat: b8b64dc0 -->
-

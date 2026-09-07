@@ -28,8 +28,13 @@ func TestAccAclResource_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("streamline_acl.test", "operation", "read"),
 					resource.TestCheckResourceAttr("streamline_acl.test", "permission_type", "allow"),
 					resource.TestCheckResourceAttr("streamline_acl.test", "pattern_type", "literal"),
-					resource.TestCheckResourceAttr("streamline_acl.test", "host", "*"),
+					resource.TestCheckResourceAttr("streamline_acl.test", "host", "127.0.0.1"),
 				),
+			},
+			{
+				ResourceName:      "streamline_acl.test",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})
@@ -59,6 +64,7 @@ resource "streamline_acl" "test" {
   resource_type   = "topic"
   resource_name   = %[1]q
   principal       = "User:test-user"
+  host            = "127.0.0.1"
   operation       = "read"
   permission_type = "allow"
 }
@@ -72,6 +78,7 @@ resource "streamline_acl" "test" {
   resource_name   = "logs-"
   pattern_type    = "prefixed"
   principal       = "User:producer-service"
+  host            = "127.0.0.1"
   operation       = "write"
   permission_type = "allow"
 }
